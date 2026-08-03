@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bash Service Guide"
+  short_description: "Standardize Bash lifecycle and package-first production"
+  default_prompt: "Use $bash-service-guide with $service-release-governance to standardize Bash lifecycle scripts and ensure production starts only repository-installed formal packages."
