@@ -1,4 +1,4 @@
 interface:
   display_name: "Service Release Governance"
-  short_description: "Enforce package-first production service releases"
+  short_description: "Enforce package-first production releases for npm and Python services"
   default_prompt: "Use $service-release-governance to prepare or audit this service release and ensure production runs an installed formal package."
