@@ -116,22 +116,12 @@ SERVICE_NAME="api"
 CLI_NAME="funflix"       # the service's own installed CLI, see service-release-governance
 PORT=8080
 CONFIG_PATH=""            # optional override; empty means rely on the CLI's own default path
-STARTUP_GRACE_SECONDS=1
-STOP_TIMEOUT_SECONDS=10
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
-ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-SERVICE_ROOT="${ROOT}/services/api"
-RUN_DIR="${SERVICE_ROOT}/.run"
-LOG_FILE="${RUN_DIR}/${SERVICE_NAME}.log"
-PID_FILE="${RUN_DIR}/${SERVICE_NAME}.pid"
+                           # (${XDG_CONFIG_HOME:-~/.config}/<org>/funflix/config.toml). Either
+                           # way, "${CLI_NAME}" itself writes and reads funflix.pid next to
+                           # whichever config path is actually in effect — this script never
+                           # touches that file directly.
 
 readonly SERVICE_NAME CLI_NAME PORT CONFIG_PATH
-readonly STARTUP_GRACE_SECONDS STOP_TIMEOUT_SECONDS
-readonly SCRIPT_DIR SCRIPT_PATH ROOT SERVICE_ROOT RUN_DIR LOG_FILE PID_FILE
-
-SERVICE_COMMAND=()
 
 usage() {
   printf 'Usage: %s <start|stop|restart|run|status>\n' "${0##*/}" >&2
@@ -142,95 +132,25 @@ die() {
   exit 2
 }
 
-service_command() {
+cli_args() {
   # Both a locally-built install and a registry-pinned install expose the
   # same CLI; do not branch this on dev/prod.
-  SERVICE_COMMAND=("${CLI_NAME}" server start --port "${PORT}")
-  [[ -n "${CONFIG_PATH}" ]] && SERVICE_COMMAND+=(--config "${CONFIG_PATH}")
-}
-
-installed_version() {
-  "${CLI_NAME}" --version 2>/dev/null || printf 'unknown\n'
-}
-
-read_pid() {
-  local pid_file="$1"
-  local pid
-  [[ -f "${pid_file}" ]] || return 1
-  IFS= read -r pid <"${pid_file}" || return 1
-  [[ "${pid}" =~ ^[0-9]+$ ]] && (( pid > 1 )) || return 1
-  printf '%s\n' "${pid}"
-}
-
-pid_is_live() {
-  kill -0 "$1" 2>/dev/null
-}
-
-do_run() {
-  service_command
-  mkdir -p "${SERVICE_ROOT}"
-  cd "${SERVICE_ROOT}"
-  exec "${SERVICE_COMMAND[@]}"
+  CLI_ARGS=(--port "${PORT}")
+  [[ -n "${CONFIG_PATH}" ]] && CLI_ARGS+=(--config "${CONFIG_PATH}")
 }
 
 do_start() {
-  local pid tmp_pid_file
+  cli_args
+  "${CLI_NAME}" server start "${CLI_ARGS[@]}"
+}
 
-  mkdir -p "${RUN_DIR}"
-  if pid="$(read_pid "${PID_FILE}")" && pid_is_live "${pid}"; then
-    die "${SERVICE_NAME} is already running (pid ${pid})"
-  fi
-  if [[ -e "${PID_FILE}" ]]; then
-    printf 'warning: removing stale PID file %s\n' "${PID_FILE}" >&2
-    rm -f "${PID_FILE}"
-  fi
-
-  nohup bash "${SCRIPT_PATH}" __run \
-    </dev/null >>"${LOG_FILE}" 2>&1 &
-  pid=$!
-
-  tmp_pid_file="${PID_FILE}.tmp.$$"
-  printf '%s\n' "${pid}" >"${tmp_pid_file}"
-  mv -f "${tmp_pid_file}" "${PID_FILE}"
-
-  sleep "${STARTUP_GRACE_SECONDS}"
-  if ! pid_is_live "${pid}"; then
-    rm -f "${PID_FILE}"
-    printf 'error: %s failed to start; inspect %s\n' \
-      "${SERVICE_NAME}" "${LOG_FILE}" >&2
-    return 1
-  fi
-
-  printf '%s started (pid %s, log %s)\n' "${SERVICE_NAME}" "${pid}" "${LOG_FILE}"
+do_run() {
+  cli_args
+  exec "${CLI_NAME}" server run "${CLI_ARGS[@]}"
 }
 
 do_stop() {
-  local pid deadline
-
-  if ! pid="$(read_pid "${PID_FILE}")"; then
-    rm -f "${PID_FILE}"
-    printf '%s is not running\n' "${SERVICE_NAME}"
-    return
-  fi
-  if ! pid_is_live "${pid}"; then
-    rm -f "${PID_FILE}"
-    printf '%s had a stale PID file\n' "${SERVICE_NAME}"
-    return
-  fi
-
-  kill -TERM "${pid}"
-  deadline=$((SECONDS + STOP_TIMEOUT_SECONDS))
-  while pid_is_live "${pid}"; do
-    if (( SECONDS >= deadline )); then
-      printf 'error: %s did not stop after %ss (pid %s)\n' \
-        "${SERVICE_NAME}" "${STOP_TIMEOUT_SECONDS}" "${pid}" >&2
-      return 1
-    fi
-    sleep 0.2
-  done
-
-  rm -f "${PID_FILE}"
-  printf '%s stopped\n' "${SERVICE_NAME}"
+  "${CLI_NAME}" server stop
 }
 
 do_restart() {
@@ -239,27 +159,13 @@ do_restart() {
 }
 
 do_status() {
-  local pid
-
-  if pid="$(read_pid "${PID_FILE}")" && pid_is_live "${pid}"; then
-    printf '%s: running (pid %s, configured port %s, version %s)\n' \
-      "${SERVICE_NAME}" "${pid}" "${PORT}" "$(installed_version)"
-  elif [[ -e "${PID_FILE}" ]]; then
-    printf '%s: stale PID file (%s)\n' "${SERVICE_NAME}" "${PID_FILE}"
-  else
-    printf '%s: stopped (configured port %s, version %s)\n' \
-      "${SERVICE_NAME}" "${PORT}" "$(installed_version)"
-  fi
+  "${CLI_NAME}" server status
 }
 
 main() {
   local action="${1:-}"
 
   case "${action}" in
-    __run)
-      (( $# == 1 )) || die "invalid internal invocation"
-      do_run
-      ;;
     start|stop|restart|run|status)
       (( $# == 1 )) || {
         usage
@@ -277,7 +183,7 @@ main() {
 main "$@"
 ```
 
-The generic `pid_is_live` check proves only liveness. Extend it with a repository-specific identity check when a stable executable, command marker, or runtime metadata source is available. Do not substitute a port-owner lookup as process identity.
+`do_start`/`do_run`/`do_stop`/`do_status` are thin delegations: the installed CLI backgrounds itself (`server start`), stays foregrounded when asked (`server run`), and owns the PID file that `server stop`/`server status` read — this script does not `nohup` anything, write a PID file, or poll for liveness itself. If a given repository's CLI genuinely cannot daemonize itself, fall back to the `nohup`-and-PID-file pattern in [runtime-patterns.md](runtime-patterns.md#backgrounding-pattern) instead of this primary shape; in that fallback, extend the liveness check with a repository-specific identity check when a stable executable, command marker, or runtime metadata source is available, and never substitute a port-owner lookup as process identity.
 
 For a true single-service repository, keep the same validation and lifecycle boundaries in `scripts/setup.sh` and omit the dispatcher layer.
 
@@ -286,5 +192,5 @@ For a true single-service repository, keep the same validation and lifecycle bou
 - Add `install` (dev-only, no argument — clear, rebuild from the working tree, local-install, e.g. via `funbuild install`) and `publish` (prod-only, no argument — build and release, e.g. via `funbuild build`/`funbuild release`) only when the lifecycle script owns those proven commands. Follow `service-release-governance`; never make `start`/`run` publish, install, or fall back to local build output.
 - Add `upgrade`, `rollback <version>`, and `uninstall` only as thin passthroughs to the installed CLI's own top-level subcommands (`"${CLI_NAME}" upgrade`, `"${CLI_NAME}" rollback "$1"`, `"${CLI_NAME}" uninstall`) when the script genuinely needs one consistent entrypoint — the CLI already implements these standalone, which matters on a prod host that may not have this repository checked out at all. Make `uninstall` call `do_stop` first, then invoke the CLI's `uninstall`, never remove a live install.
 - Add `all` only when batch operation is required. Implement it as a separate dispatch path with deterministic service order, output labeling, and an explicit fail-fast or collect-errors policy.
-- Add service-scoped locking when concurrent lifecycle calls are plausible.
+- Fall back to a script-managed PID file and service-scoped lock only when the installed CLI cannot daemonize itself (see the fallback in [runtime-patterns.md](runtime-patterns.md#backgrounding-pattern)) — under the primary, CLI-owned-PID model above, concurrent `start`/`stop` safety is the CLI's responsibility, not this script's.
 - Extract helpers into `scripts/lib/` only after two or more service scripts share the same tested mechanics.

@@ -72,7 +72,24 @@ In multi-service repositories:
 
 ## Backgrounding Pattern
 
-Build commands as Bash arrays so arguments remain distinct:
+The primary case: the installed CLI daemonizes itself and owns its own PID file (written next to its resolved config path). Build commands as Bash arrays so arguments remain distinct, and let the CLI handle backgrounding directly — no `nohup`, no script-managed PID file:
+
+```bash
+do_start() {
+  "${CLI_NAME}" server start ${CONFIG_PATH:+--config "${CONFIG_PATH}"} --port "${PORT}"
+}
+
+do_run() {
+  exec "${CLI_NAME}" server run ${CONFIG_PATH:+--config "${CONFIG_PATH}"} --port "${PORT}"
+}
+```
+
+- `do_start` simply invokes the CLI and returns once it reports it has detached; the CLI itself writes `<cli-name>.pid` next to whichever config path it resolved.
+- `do_run` uses `exec` so signals and exit status reach the CLI's foreground process directly.
+- `do_stop`/`do_status` call `"${CLI_NAME}" server stop`/`"${CLI_NAME}" server status`, which read that same PID file — the script never opens or writes it itself.
+- Do not use `eval` or a command string. Use `bash -c` only when shell syntax is genuinely required and parameters can be passed safely.
+
+Fallback case: only when the installed CLI cannot daemonize itself, the Bash script must do the backgrounding and own a PID file itself:
 
 ```bash
 command=("${CLI_NAME}" server start --port "${port}")
@@ -80,7 +97,7 @@ nohup "${command[@]}" </dev/null >>"${log_file}" 2>&1 &
 pid=$!
 ```
 
-If background start reuses the foreground implementation, invoke an internal script action and make the foreground path end in `exec`:
+Or, if background start reuses the foreground implementation, invoke an internal script action and make the foreground path end in `exec`:
 
 ```bash
 nohup bash "${SCRIPT_PATH}" __run </dev/null >>"${log_file}" 2>&1 &
@@ -93,7 +110,7 @@ do_run() {
 }
 ```
 
-Whichever style you choose:
+Under the fallback, whichever style you choose:
 
 - Capture `$!` immediately and write it to the PID file atomically.
 - Refuse a duplicate start when the existing PID is live; handle stale or invalid PID files explicitly.
@@ -101,15 +118,15 @@ Whichever style you choose:
 - Write logs into `.run/`.
 - Redirect stdin from `/dev/null` and do not let `start` depend on the terminal staying open.
 - In multi-service scripts, ensure the PID and log file path is unique per service (e.g. `.run/api.pid`) — no environment suffix is needed since a host only runs one active install per service.
-- Do not use `eval` or a command string. Use `bash -c` only when shell syntax is genuinely required and parameters can be passed safely.
-- If the command daemonizes itself or leaves an unmanaged process tree, use the runtime's native PID mechanism or an existing process supervisor.
+- If the command daemonizes itself or leaves an unmanaged process tree, use the runtime's native PID mechanism or an existing process supervisor — this is exactly the signal that the primary (CLI-owned) pattern above should be used instead.
 
 ## Sanity Checks
 
-- Does `status` inspect the same service-specific port that `start` used, and report the installed package's version alongside it?
-- Does `stop` target the PID file written by the chosen background start path?
-- Does `stop` send `TERM`, wait for exit, and avoid deleting state while the process is still live?
-- Can a stale or reused PID cause the script to signal an unrelated process?
+- Does `start` call `<cli> server start` and let the CLI itself detach and own its PID file, rather than the script wrapping it in `nohup`?
+- Does `run` call `<cli> server run` (not `server start`) via `exec`, staying attached to the terminal?
+- Does `status` call `<cli> server status`, which reads the same PID file `start`/`run` wrote, and report the installed package's version alongside PID/port?
+- Does `stop` call `<cli> server stop`, trusting the CLI to target its own PID file rather than the script guessing a path?
+- Under the non-daemonizing-CLI fallback only: does `stop` target the PID file written by the chosen background start path, send `TERM`, wait for exit, and avoid deleting state while the process is still live? Can a stale or reused PID cause the script to signal an unrelated process?
 - Does `start`/`run` avoid reload, watch, and development-only flags regardless of which package is installed?
 - Does `start`/`run` resolve only the currently installed package — a fresh local build after `install`, or the pinned registry install — never the source checkout or a stale build output?
 - Does the script correctly avoid taking a `dev`/`prod` argument on `start`/`stop`/`restart`/`run`/`status`?
