@@ -17,24 +17,26 @@ Read this file when `scripts/setup.sh` or a per-service script needs concrete ru
 
 ## Python Pattern
 
-Prefer these production entrypoints, in order of confidence:
+`start`/`run` always use the installed console-script entrypoint, regardless of whether the install came from a local build or the registry. Prefer, in order of confidence:
 
-1. A console script from the exact formal package installed into the production environment
-2. `python -m package` using that production environment, with the working directory outside the source checkout
+1. A console script from whichever package is currently installed (a locally built copy after `install`, or the exact formal package after a registry install)
+2. `python -m package` using that same environment, with the working directory outside the source checkout
 
-Avoid these as the default `start prod` command:
+Avoid these as the `start`/`run` command, in either case:
 
 - `python scripts/foo.py`
 - `python app.py` from an ad hoc working directory
 - `uv run <command>` when it can resolve the current workspace or an editable install
-- Dev-only reload servers used as production daemons
+- Dev-only reload servers used as the lifecycle script's daemon
 
-Typical split:
+Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way:
 
-- `run dev`: local dev server, reloader, or `uv run ... --reload`
-- `publish`: configured `nltbuild build` or the existing Python release command
-- production install: exact package version from the repository chosen by `service-release-governance`
-- `start prod`: installed CLI or module entrypoint without dev-only reload flags or source-path overrides
+- ad hoc dev iteration (outside the lifecycle script): local dev server, reloader, or `uv run ... --reload`
+- `install` (dev-only): clear previous build/install, rebuild, force-reinstall the wheel locally (`funbuild install` when available)
+- `publish` (prod-only): `funbuild build` (alias `funbuild release`) or the existing Python release command
+- production install (done outside the repo's `setup.sh`, on the prod host): exact package version from the repository chosen by `service-release-governance`, via `pip`/`uv pip` or the installed CLI's own `upgrade`/`rollback` subcommand
+- `start`/`run`: the installed CLI or module entrypoint, no dev-only reload flags or source-path overrides, no `dev`/`prod` argument
+- `status`: PID/port plus the installed package's version
 
 In multi-service repositories:
 
@@ -43,35 +45,37 @@ In multi-service repositories:
 
 ## Frontend Pattern
 
-Prefer these production entrypoints:
+`start`/`run` always use the installed production server/CLI, regardless of whether the install came from a local build or the registry. Prefer:
 
-1. A documented production server command from the exact package installed from the selected registry
+1. A documented production server command from whichever package is currently installed
 2. An SSR server or static asset command whose `build/` or `dist/` belongs to that installed release, outside the source checkout
 
-Avoid these as `start prod` defaults:
+Avoid these as the `start`/`run` command:
 
 - `vite dev`
 - `next dev`
 - Any hot-reload or watch command
 
-Typical split:
+Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way:
 
-- `run dev`: `npm run dev`, `pnpm dev`, or framework-equivalent local dev server
-- `publish`: build and upload the formal package through the configured registry
-- production install: exact package version from that registry into a clean release location
-- `start prod`: SSR server or static asset command against the installed release output
+- ad hoc dev iteration (outside the lifecycle script): `npm run dev`, `pnpm dev`, or framework-equivalent local dev server
+- `install` (dev-only): clear previous build/install, rebuild (`npm run build`), install the built package locally (`funbuild install` when available)
+- `publish` (prod-only): build and upload the formal package through the configured registry
+- production install (done outside the repo's `setup.sh`, on the prod host): exact package version from that registry, via `npm install -g`/`npm ci` or the installed CLI's own `upgrade`/`rollback` subcommand
+- `start`/`run`: SSR server or static asset command against whichever installed release is currently on the host, no `dev`/`prod` argument
+- `status`: PID/port plus the installed package's version
 
 In multi-service repositories:
 
-- keep development commands scoped to the service root and production commands scoped to the installed release root
-- do not assume the frontend and backend share the same `publish` or `start prod` pipeline
+- keep ad hoc dev iteration scoped to the service root and `start`/`run` scoped to the installed release root
+- do not assume the frontend and backend share the same `publish` pipeline
 
 ## Backgrounding Pattern
 
 Build commands as Bash arrays so arguments remain distinct:
 
 ```bash
-command=(uv run api --port "${port}")
+command=("${CLI_NAME}" server start --port "${port}")
 nohup "${command[@]}" </dev/null >>"${log_file}" 2>&1 &
 pid=$!
 ```
@@ -79,11 +83,11 @@ pid=$!
 If background start reuses the foreground implementation, invoke an internal script action and make the foreground path end in `exec`:
 
 ```bash
-nohup bash "${SCRIPT_PATH}" __run "${env}" </dev/null >>"${log_file}" 2>&1 &
+nohup bash "${SCRIPT_PATH}" __run </dev/null >>"${log_file}" 2>&1 &
 pid=$!
 
 do_run() {
-  service_command_for_env "$1"
+  service_command
   cd "${SERVICE_ROOT}"
   exec "${SERVICE_COMMAND[@]}"
 }
@@ -96,16 +100,18 @@ Whichever style you choose:
 - Verify that the child survives a short startup grace period before reporting success.
 - Write logs into `.run/`.
 - Redirect stdin from `/dev/null` and do not let `start` depend on the terminal staying open.
-- In multi-service scripts, ensure the PID and log file path is unique for both service and environment.
+- In multi-service scripts, ensure the PID and log file path is unique per service (e.g. `.run/api.pid`) — no environment suffix is needed since a host only runs one active install per service.
 - Do not use `eval` or a command string. Use `bash -c` only when shell syntax is genuinely required and parameters can be passed safely.
 - If the command daemonizes itself or leaves an unmanaged process tree, use the runtime's native PID mechanism or an existing process supervisor.
 
 ## Sanity Checks
 
-- Does `status` inspect the same service-specific and environment-specific port that `start` used?
+- Does `status` inspect the same service-specific port that `start` used, and report the installed package's version alongside it?
 - Does `stop` target the PID file written by the chosen background start path?
 - Does `stop` send `TERM`, wait for exit, and avoid deleting state while the process is still live?
 - Can a stale or reused PID cause the script to signal an unrelated process?
-- Does each service's `prod` path avoid reload, watch, and development-only flags?
-- Does each `prod` command resolve only the pinned repository-installed package, never the source checkout or local build output?
+- Does `start`/`run` avoid reload, watch, and development-only flags regardless of which package is installed?
+- Does `start`/`run` resolve only the currently installed package — a fresh local build after `install`, or the pinned registry install — never the source checkout or a stale build output?
+- Does the script correctly avoid taking a `dev`/`prod` argument on `start`/`stop`/`restart`/`run`/`status`?
+- Does `uninstall`, if the script owns it, stop the service before removing the package?
 - Does the script rely on the repository root or activated environment in a way that must be made explicit?

@@ -47,10 +47,11 @@ Read extra references only when needed:
    - Keep logs, PID files, and lock files under `.run/`.
    - Keep ports in a top configuration block.
    - Refuse duplicate starts, distinguish stale PID files from live processes, and stop only the recorded service process.
-5. Align release and runtime behavior.
-   - Allow `dev` to run current source directly.
-   - Make `publish` build and upload a formal package, and make production installation fetch an exact version from the repository selected by `service-release-governance`.
-   - Make `start prod` and `run prod` execute only that installed package. Fail when it is missing; never fall back to source or a local build directory.
+5. Align release and runtime behavior with `service-release-governance`'s unified dev/prod contract — both modes install a package and start it through the package's own CLI; only the package source and `--config` path differ, and only `install`/`publish` are environment-asymmetric.
+   - Make `install` (dev-only, no environment argument) clear any previous local build/install, rebuild from the current working tree, and install the built package locally (`funbuild install` when available) — it always means the local-build flavor.
+   - Make `publish` (prod-only, no environment argument) build and upload a formal package. Call `funbuild build` (alias `funbuild release`) when the repository is one it auto-detects (npm/pnpm/yarn, uv, Poetry, or hybrid) instead of hand-rolling a build/publish sequence.
+   - Make `start`, `stop`, `restart`, `run`, and `status` take no `dev`/`prod` argument at all — they operate on whichever package is currently installed on the host. `start`/`run` invoke the installed package's own CLI — `<cli> server start [--config <path>] [--port ...]` — never a raw script, module path, or dev server. Fail when the required install is missing; never fall back to source or a local build directory silently. Make `status` also report the installed package's version, not just PID/port.
+   - Treat `upgrade`, `rollback <version>`, and `uninstall` as primarily the installed CLI's own top-level subcommands (`<cli> upgrade`, `<cli> rollback`, `<cli> uninstall`); add thin passthroughs in the lifecycle script only when it genuinely needs one consistent entrypoint. `uninstall` must stop the running service first, then remove the package — never remove a package out from under a live process.
 6. Verify behavior after editing.
    - Check shell syntax.
    - Smoke-test valid and invalid parsing plus at least one affected command path per touched service.
@@ -61,11 +62,12 @@ Read extra references only when needed:
 - Keep `start` backgrounded and `run` foregrounded.
 - Split multi-service repositories into a dispatcher plus per-service scripts.
 - Resolve `action -> service -> env` in multi-service repositories.
-- Require `dev` or `prod` for `start`, `stop`, `restart`, and `run`.
-- Store logs, PID files, and lock files under `.run/`, with service-scoped names when needed.
+- Require an explicit `dev`/`prod` choice only for `install` (always dev) and `publish` (always prod) — neither actually takes the argument, the action name already implies it. `start`, `stop`, `restart`, `run`, and `status` take no `dev`/`prod` argument.
+- Store logs, PID files, and lock files under `.run/`, with service-scoped names when needed (no environment suffix — a host only ever runs one active install).
 - Define ports at the top of the relevant script and reuse them everywhere.
-- Make `start prod` and `run prod` execute the exact formal package installed from the selected repository, never source or local build output.
-- Keep `status` non-interactive and make it report every configured environment unless the repository defines an explicit filter.
+- Make `start` and `run` execute the installed package's CLI (`<cli> server start [--config <path>]`) against whichever package is currently installed — a locally built-and-installed copy on a dev host, the exact formal package on a prod host — never source or local build output run directly.
+- Keep `status` non-interactive and make it report the installed package's version alongside PID/port.
+- Make `uninstall`, when the script owns it, stop the running service first and only then remove the package.
 - Prefer CLI args over prompts; use the repository's existing prompt tool only as a fallback when args are absent.
 
 Use [references/rules.md](references/rules.md) when you need the expanded version of these rules.

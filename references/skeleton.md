@@ -33,7 +33,7 @@ readonly -a ACTIONS=(start stop restart run status)
 readonly -a SERVICES=(api web)
 
 usage() {
-  printf 'Usage: %s <action> <service> [dev|prod]\n' "${0##*/}" >&2
+  printf 'Usage: %s <action> <service>\n' "${0##*/}" >&2
 }
 
 die() {
@@ -49,13 +49,6 @@ contains() {
     [[ "${item}" == "${needle}" ]] && return 0
   done
   return 1
-}
-
-needs_env() {
-  case "$1" in
-    start|stop|restart|run) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 choose() {
@@ -75,25 +68,21 @@ service_script_for() {
 dispatch() {
   local action="$1"
   local service="$2"
-  local env="${3:-}"
   local script
-  local -a args=("${action}")
 
   script="$(service_script_for "${service}")"
   [[ -f "${script}" ]] || die "missing service script: ${script}"
-  needs_env "${action}" && args+=("${env}")
-  bash "${script}" "${args[@]}"
+  bash "${script}" "${action}"
 }
 
 main() {
-  (( $# <= 3 )) || {
+  (( $# <= 2 )) || {
     usage
     die "too many arguments"
   }
 
   local action="${1:-}"
   local service="${2:-}"
-  local env="${3:-}"
 
   [[ -n "${action}" ]] || action="$(choose "${ACTIONS[@]}")"
   contains "${action}" "${ACTIONS[@]}" || {
@@ -107,24 +96,13 @@ main() {
     die "unknown service: ${service}"
   }
 
-  if needs_env "${action}"; then
-    [[ -n "${env}" ]] || env="$(choose dev prod)"
-    [[ "${env}" == "dev" || "${env}" == "prod" ]] || {
-      usage
-      die "invalid environment: ${env}"
-    }
-  elif [[ -n "${env}" ]]; then
-    usage
-    die "${action} does not accept an environment"
-  fi
-
-  dispatch "${action}" "${service}" "${env}"
+  dispatch "${action}" "${service}"
 }
 
 main "$@"
 ```
 
-This baseline assumes every listed service supports every listed action. If capabilities differ, add an explicit action-to-service matrix, filter interactive service choices, and reject unsupported combinations before dispatch.
+This baseline assumes every listed service supports every listed action, and that none of them take a `dev`/`prod` argument — a host only ever runs one active install per service, so `start`/`stop`/`restart`/`run`/`status` act on whatever is currently installed. If capabilities differ per service, add an explicit action-to-service matrix, filter interactive service choices, and reject unsupported combinations before dispatch. Add `install`/`publish` per [Optional Extensions](#optional-extensions) only when `setup.sh` owns those steps; neither takes an environment argument either, since the action name already fixes which one it is.
 
 ## Per-Service Script
 
@@ -135,8 +113,9 @@ Let each service script own its paths, ports, runtime files, concrete commands, 
 set -euo pipefail
 
 SERVICE_NAME="api"
-DEV_PORT=8000
-PROD_PORT=8080
+CLI_NAME="funflix"       # the service's own installed CLI, see service-release-governance
+PORT=8080
+CONFIG_PATH=""            # optional override; empty means rely on the CLI's own default path
 STARTUP_GRACE_SECONDS=1
 STOP_TIMEOUT_SECONDS=10
 
@@ -145,16 +124,17 @@ SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SERVICE_ROOT="${ROOT}/services/api"
 RUN_DIR="${SERVICE_ROOT}/.run"
+LOG_FILE="${RUN_DIR}/${SERVICE_NAME}.log"
+PID_FILE="${RUN_DIR}/${SERVICE_NAME}.pid"
 
-readonly SERVICE_NAME DEV_PORT PROD_PORT
+readonly SERVICE_NAME CLI_NAME PORT CONFIG_PATH
 readonly STARTUP_GRACE_SECONDS STOP_TIMEOUT_SECONDS
-readonly SCRIPT_DIR SCRIPT_PATH ROOT SERVICE_ROOT RUN_DIR
+readonly SCRIPT_DIR SCRIPT_PATH ROOT SERVICE_ROOT RUN_DIR LOG_FILE PID_FILE
 
 SERVICE_COMMAND=()
 
 usage() {
-  printf 'Usage: %s <start|stop|restart|run> <dev|prod>\n' "${0##*/}" >&2
-  printf '       %s status\n' "${0##*/}" >&2
+  printf 'Usage: %s <start|stop|restart|run|status>\n' "${0##*/}" >&2
 }
 
 die() {
@@ -162,44 +142,15 @@ die() {
   exit 2
 }
 
-validate_env() {
-  [[ "$1" == "dev" || "$1" == "prod" ]]
+service_command() {
+  # Both a locally-built install and a registry-pinned install expose the
+  # same CLI; do not branch this on dev/prod.
+  SERVICE_COMMAND=("${CLI_NAME}" server start --port "${PORT}")
+  [[ -n "${CONFIG_PATH}" ]] && SERVICE_COMMAND+=(--config "${CONFIG_PATH}")
 }
 
-port_for_env() {
-  case "$1" in
-    dev) printf '%s\n' "${DEV_PORT}" ;;
-    prod) printf '%s\n' "${PROD_PORT}" ;;
-    *) return 1 ;;
-  esac
-}
-
-log_file_for_env() {
-  printf '%s/%s.%s.log\n' "${RUN_DIR}" "${SERVICE_NAME}" "$1"
-}
-
-pid_file_for_env() {
-  printf '%s/%s.%s.pid\n' "${RUN_DIR}" "${SERVICE_NAME}" "$1"
-}
-
-service_command_for_env() {
-  local env="$1"
-  local port
-  port="$(port_for_env "${env}")"
-
-  # Replace these arrays with commands proven from repository metadata or docs.
-  case "${env}" in
-    dev) SERVICE_COMMAND=(replace-with-dev-command --port "${port}") ;;
-    prod) SERVICE_COMMAND=(replace-with-prod-command --port "${port}") ;;
-  esac
-}
-
-working_dir_for_env() {
-  case "$1" in
-    dev) printf '%s\n' "${SERVICE_ROOT}" ;;
-    prod) printf '%s\n' "${RUN_DIR}" ;;
-    *) return 1 ;;
-  esac
+installed_version() {
+  "${CLI_NAME}" --version 2>/dev/null || printf 'unknown\n'
 }
 
 read_pid() {
@@ -216,63 +167,54 @@ pid_is_live() {
 }
 
 do_run() {
-  local env="$1"
-  local working_dir
-  service_command_for_env "${env}"
-  working_dir="$(working_dir_for_env "${env}")"
-  mkdir -p "${working_dir}"
-  cd "${working_dir}"
+  service_command
+  mkdir -p "${SERVICE_ROOT}"
+  cd "${SERVICE_ROOT}"
   exec "${SERVICE_COMMAND[@]}"
 }
 
 do_start() {
-  local env="$1"
-  local log_file pid_file pid tmp_pid_file
-  log_file="$(log_file_for_env "${env}")"
-  pid_file="$(pid_file_for_env "${env}")"
+  local pid tmp_pid_file
 
   mkdir -p "${RUN_DIR}"
-  if pid="$(read_pid "${pid_file}")" && pid_is_live "${pid}"; then
-    die "${SERVICE_NAME} ${env} is already running (pid ${pid})"
+  if pid="$(read_pid "${PID_FILE}")" && pid_is_live "${pid}"; then
+    die "${SERVICE_NAME} is already running (pid ${pid})"
   fi
-  if [[ -e "${pid_file}" ]]; then
-    printf 'warning: removing stale PID file %s\n' "${pid_file}" >&2
-    rm -f "${pid_file}"
+  if [[ -e "${PID_FILE}" ]]; then
+    printf 'warning: removing stale PID file %s\n' "${PID_FILE}" >&2
+    rm -f "${PID_FILE}"
   fi
 
-  nohup bash "${SCRIPT_PATH}" __run "${env}" \
-    </dev/null >>"${log_file}" 2>&1 &
+  nohup bash "${SCRIPT_PATH}" __run \
+    </dev/null >>"${LOG_FILE}" 2>&1 &
   pid=$!
 
-  tmp_pid_file="${pid_file}.tmp.$$"
+  tmp_pid_file="${PID_FILE}.tmp.$$"
   printf '%s\n' "${pid}" >"${tmp_pid_file}"
-  mv -f "${tmp_pid_file}" "${pid_file}"
+  mv -f "${tmp_pid_file}" "${PID_FILE}"
 
   sleep "${STARTUP_GRACE_SECONDS}"
   if ! pid_is_live "${pid}"; then
-    rm -f "${pid_file}"
-    printf 'error: %s %s failed to start; inspect %s\n' \
-      "${SERVICE_NAME}" "${env}" "${log_file}" >&2
+    rm -f "${PID_FILE}"
+    printf 'error: %s failed to start; inspect %s\n' \
+      "${SERVICE_NAME}" "${LOG_FILE}" >&2
     return 1
   fi
 
-  printf '%s %s started (pid %s, log %s)\n' \
-    "${SERVICE_NAME}" "${env}" "${pid}" "${log_file}"
+  printf '%s started (pid %s, log %s)\n' "${SERVICE_NAME}" "${pid}" "${LOG_FILE}"
 }
 
 do_stop() {
-  local env="$1"
-  local pid_file pid deadline
-  pid_file="$(pid_file_for_env "${env}")"
+  local pid deadline
 
-  if ! pid="$(read_pid "${pid_file}")"; then
-    rm -f "${pid_file}"
-    printf '%s %s is not running\n' "${SERVICE_NAME}" "${env}"
+  if ! pid="$(read_pid "${PID_FILE}")"; then
+    rm -f "${PID_FILE}"
+    printf '%s is not running\n' "${SERVICE_NAME}"
     return
   fi
   if ! pid_is_live "${pid}"; then
-    rm -f "${pid_file}"
-    printf '%s %s had a stale PID file\n' "${SERVICE_NAME}" "${env}"
+    rm -f "${PID_FILE}"
+    printf '%s had a stale PID file\n' "${SERVICE_NAME}"
     return
   fi
 
@@ -280,70 +222,50 @@ do_stop() {
   deadline=$((SECONDS + STOP_TIMEOUT_SECONDS))
   while pid_is_live "${pid}"; do
     if (( SECONDS >= deadline )); then
-      printf 'error: %s %s did not stop after %ss (pid %s)\n' \
-        "${SERVICE_NAME}" "${env}" "${STOP_TIMEOUT_SECONDS}" "${pid}" >&2
+      printf 'error: %s did not stop after %ss (pid %s)\n' \
+        "${SERVICE_NAME}" "${STOP_TIMEOUT_SECONDS}" "${pid}" >&2
       return 1
     fi
     sleep 0.2
   done
 
-  rm -f "${pid_file}"
-  printf '%s %s stopped\n' "${SERVICE_NAME}" "${env}"
+  rm -f "${PID_FILE}"
+  printf '%s stopped\n' "${SERVICE_NAME}"
 }
 
 do_restart() {
-  local env="$1"
-  do_stop "${env}"
-  do_start "${env}"
-}
-
-do_status_env() {
-  local env="$1"
-  local pid_file pid port
-  pid_file="$(pid_file_for_env "${env}")"
-  port="$(port_for_env "${env}")"
-
-  if pid="$(read_pid "${pid_file}")" && pid_is_live "${pid}"; then
-    printf '%s %s: running (pid %s, configured port %s)\n' \
-      "${SERVICE_NAME}" "${env}" "${pid}" "${port}"
-  elif [[ -e "${pid_file}" ]]; then
-    printf '%s %s: stale PID file (%s)\n' \
-      "${SERVICE_NAME}" "${env}" "${pid_file}"
-  else
-    printf '%s %s: stopped (configured port %s)\n' \
-      "${SERVICE_NAME}" "${env}" "${port}"
-  fi
+  do_stop
+  do_start
 }
 
 do_status() {
-  do_status_env dev
-  do_status_env prod
+  local pid
+
+  if pid="$(read_pid "${PID_FILE}")" && pid_is_live "${pid}"; then
+    printf '%s: running (pid %s, configured port %s, version %s)\n' \
+      "${SERVICE_NAME}" "${pid}" "${PORT}" "$(installed_version)"
+  elif [[ -e "${PID_FILE}" ]]; then
+    printf '%s: stale PID file (%s)\n' "${SERVICE_NAME}" "${PID_FILE}"
+  else
+    printf '%s: stopped (configured port %s, version %s)\n' \
+      "${SERVICE_NAME}" "${PORT}" "$(installed_version)"
+  fi
 }
 
 main() {
   local action="${1:-}"
-  local env="${2:-}"
 
   case "${action}" in
     __run)
-      (( $# == 2 )) || die "invalid internal invocation"
-      validate_env "${env}" || die "invalid environment: ${env}"
-      do_run "${env}"
+      (( $# == 1 )) || die "invalid internal invocation"
+      do_run
       ;;
-    start|stop|restart|run)
-      (( $# == 2 )) || {
-        usage
-        die "${action} requires exactly one environment"
-      }
-      validate_env "${env}" || die "invalid environment: ${env}"
-      "do_${action}" "${env}"
-      ;;
-    status)
+    start|stop|restart|run|status)
       (( $# == 1 )) || {
         usage
-        die "status does not accept an environment"
+        die "${action} takes no further arguments"
       }
-      do_status
+      "do_${action}"
       ;;
     *)
       usage
@@ -361,7 +283,8 @@ For a true single-service repository, keep the same validation and lifecycle bou
 
 ## Optional Extensions
 
-- Add a separate `publish` or `install` action only when the lifecycle script owns that proven release command. Follow `service-release-governance`; never make `start prod` publish, install, or fall back to local build output.
-- Add `all` only when batch operation is required. Implement it as a separate dispatch path with deterministic service order, environment handling, output labeling, and an explicit fail-fast or collect-errors policy.
-- Add service-and-environment-scoped locking when concurrent lifecycle calls are plausible.
+- Add `install` (dev-only, no argument — clear, rebuild from the working tree, local-install, e.g. via `funbuild install`) and `publish` (prod-only, no argument — build and release, e.g. via `funbuild build`/`funbuild release`) only when the lifecycle script owns those proven commands. Follow `service-release-governance`; never make `start`/`run` publish, install, or fall back to local build output.
+- Add `upgrade`, `rollback <version>`, and `uninstall` only as thin passthroughs to the installed CLI's own top-level subcommands (`"${CLI_NAME}" upgrade`, `"${CLI_NAME}" rollback "$1"`, `"${CLI_NAME}" uninstall`) when the script genuinely needs one consistent entrypoint — the CLI already implements these standalone, which matters on a prod host that may not have this repository checked out at all. Make `uninstall` call `do_stop` first, then invoke the CLI's `uninstall`, never remove a live install.
+- Add `all` only when batch operation is required. Implement it as a separate dispatch path with deterministic service order, output labeling, and an explicit fail-fast or collect-errors policy.
+- Add service-scoped locking when concurrent lifecycle calls are plausible.
 - Extract helpers into `scripts/lib/` only after two or more service scripts share the same tested mechanics.

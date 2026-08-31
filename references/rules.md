@@ -29,16 +29,19 @@ Read this file when you need the full invariant set or want to review an existin
 
 ### Command Semantics
 
-- `start`: run in the background and detach from the current shell session.
-- `run`: stay in the foreground in the current terminal.
-- `stop`: stop the target process for the selected service and environment.
+None of `start`, `stop`, `restart`, `run`, or `status` take a `dev`/`prod` argument. They act on whichever package is currently installed on the host — a host only ever has one active install, and whoever installed it already knows whether it came from a local build or the registry. Only `install` and `publish` are inherently environment-specific, and neither needs an explicit argument because the action name already says which one it is.
+
+- `start`: run in the background and detach from the current shell session. Invokes the installed package's CLI, `<cli> server start [--config <path>]`.
+- `run`: same command as `start`, but stay in the foreground in the current terminal (`exec`, no backgrounding).
+- `stop`: stop the target process for the selected service.
 - `restart`: implement as `stop` + `start` or equivalent explicit logic.
-- `status`: report each configured environment without prompting; accept an environment filter only when the repository defines one.
-- `publish`: build and upload a new formal package; call `nltbuild build` when the project uses this convention.
-- `install`: install an exact formal version from the repository selected by `service-release-governance`.
+- `status`: report the service's state without prompting, including the installed package's version (e.g. via `pip show`/`npm ls -g`/the CLI's own `--version`) alongside PID/port.
+- `publish`: build and upload a new formal package; prod-only, always the release flavor. Call `funbuild build` (alias `funbuild release`) when the project uses this convention — it already covers version bump, build, publish, push, and tag for npm, Python, and hybrid repos.
+- `install`: dev-only, always the local-build flavor — clear the previous local build/install, rebuild from the current working tree, and install the built package locally (`funbuild install` when available). There is no `prod` counterpart in the lifecycle script: a prod host installs the exact formal version directly via the ecosystem's package manager or the installed CLI's own `upgrade`/`rollback` subcommand, per `service-release-governance`, not through this script.
+- `upgrade`/`rollback <version>`/`uninstall`: primarily the installed CLI's own top-level subcommands (`<cli> upgrade`, `<cli> rollback <version>`, `<cli> uninstall`), not something to hand-roll in Bash. Add a passthrough in the lifecycle script only when it genuinely needs one consistent entrypoint for all of these. `uninstall` must stop the running service first, then remove the package — never remove it out from under a live process. There is no separate `install`-for-rollback path; rolling back means `rollback <version>`.
 - `all`: optional aggregate target, not a required baseline feature.
 
-Keep `publish` and `install` separate from `start prod`; a start must not silently build, publish, or change the installed version. Expose `publish` or `install` only when the Bash lifecycle script actually owns that operation. Otherwise leave them to release automation and treat the installed package as a production prerequisite.
+Keep `publish`, `install`, and any `upgrade`/`rollback`/`uninstall` passthrough separate from `start`/`run`; a start must not silently build, publish, install, or change the installed version. Expose these only when the Bash lifecycle script actually owns that operation. Otherwise leave them to the installed CLI and release automation, and treat the installed package as a prerequisite for `start`/`run`.
 
 Do not expose commands that the service does not actually support. Apply [Service Release Governance](../../service-release-governance/SKILL.md) to every production publish, install, and start path.
 
@@ -47,7 +50,7 @@ Use `exec` for the final foreground command so signals and exit codes reach the 
 ### Selection Order
 
 - Treat the target service as explicit state when the repository contains multiple long-running services.
-- Preserve the parse order `action -> service -> env` for environment-bound commands.
+- Preserve the parse order `action -> service`. No baseline action takes an environment argument, so there is no further `-> env` step to resolve.
 - Single-service repositories may omit the service argument.
 - If aggregate mode is supported, treat `all` as an explicit pseudo-service rather than an implicit default.
 
@@ -56,8 +59,8 @@ Use `exec` for the final foreground command so signals and exit codes reach the 
 - Create `.run/` under the service root before writing runtime files.
 - If one dispatcher manages several services, either:
   - write runtime files into each service root's `.run/`, or
-  - use a repo-level `.run/` with service-qualified filenames such as `api.dev.pid`
-- Keep filenames specific enough to avoid collisions across both service and environment.
+  - use a repo-level `.run/` with service-qualified filenames such as `api.pid`
+- Keep filenames specific enough to avoid collisions across services. No environment suffix is needed — a host only ever has one active install per service.
 - Avoid `/tmp` unless the repository explicitly requires it.
 
 ### Process Ownership
@@ -68,7 +71,7 @@ Use `exec` for the final foreground command so signals and exit codes reach the 
 - Before `stop`, require a numeric PID, check that it is live, and verify service identity when the repository offers a reliable command or metadata check.
 - Send `TERM`, wait for a bounded interval, and remove the PID file only after the process exits. Use `KILL` only when repository policy explicitly permits forced shutdown.
 - Never discover a process by port and then kill it. A listener can belong to an unrelated process.
-- Serialize lifecycle changes with a service-and-environment-scoped lock when concurrent invocations are realistic.
+- Serialize lifecycle changes with a service-scoped lock when concurrent invocations are realistic.
 
 ### Interaction
 
@@ -76,13 +79,13 @@ Use `exec` for the final foreground command so signals and exit codes reach the 
 - When using `gum`, keep fully specified CLI calls independent of it and emit a clear usage error if an interactive choice is needed but `gum` is unavailable.
 - Never install an interactive dependency from a lifecycle script.
 
-### Environment Selection
+### Environment Identity
 
-- Require `dev` or `prod` selection for `start`, `stop`, `restart`, and `run`.
-- Preserve the order: action first, service second when needed, environment last.
-- Support direct CLI usage without prompting when action, service, and env are already present.
+- Do not add a `dev`/`prod` argument to `start`, `stop`, `restart`, `run`, or `status`. Environment identity lives entirely in what got installed (`install` vs. a registry install/`upgrade`/`rollback`), never in a runtime argument.
+- Preserve the order: action first, service second when needed. No environment step follows.
+- Support direct CLI usage without prompting when action and service are already present.
 - Reject invalid and extra args instead of silently discarding them or replacing them with a prompt.
-- Make unfiltered `status` report all configured environments without opening a menu.
+- Make `status` report the installed package's identity (name, version) and runtime state without opening a menu.
 
 ### Aggregate Operations
 
@@ -98,31 +101,29 @@ Use `exec` for the final foreground command so signals and exit codes reach the 
 - For a single service, this shape is fine:
 
 ```bash
-DEV_PORT=3000
-PROD_PORT=8080
+PORT=8080
 ```
 
 - For multiple services, use service-scoped names such as:
 
 ```bash
-API_DEV_PORT=8000
-API_PROD_PORT=8080
-WEB_DEV_PORT=3000
-WEB_PROD_PORT=4173
+API_PORT=8080
+WEB_PORT=4173
 ```
 
+- No environment suffix is needed — a host only ever runs one active install, so one port per service is enough. If a repository genuinely needs to run a local build and a registry install side by side on one host for comparison, treat that as a repository-specific extension, not the baseline.
 - Reuse only these variables, or readonly variables derived from them, throughout startup, health checks, and status output.
 - Do not hardcode port numbers inside branch logic.
 
-### Production Start Rules
+### Start Rules
 
-- Allow development commands to run current source directly.
-- For Python services, run an installed CLI entrypoint or module from the production environment; do not let the working tree, an editable install, `PYTHONPATH`, or an implicit `uv run` workspace resolution supply production code.
-- For frontend services, run the production server or static assets from the exact repository-installed package or release directory, not the checkout's `dist/` or `build/` directory.
-- In mixed frontend/backend repositories, choose the production command independently for each service.
-- Do not use `vite dev`, `next dev`, or similar development servers as the production default.
-- Keep `dev` and `prod` start commands intentionally separate when they differ.
-- Fail `start prod` and `run prod` when the required installed version is absent or differs from the pinned release; never fall back to source.
+- `start`/`run` use exactly one command shape regardless of what's installed: `<installed-cli> server start [--config <path>] [--port ...]`. Whether the underlying package came from a local build or the registry-pinned version is decided entirely at install time, not by an argument to `start`/`run`.
+- `--config` is optional. When passed, it typically points `install`-time dev usage at a repo-tracked file such as `config/dev.toml`; when omitted, the CLI resolves its own hardcoded default (`${XDG_CONFIG_HOME:-~/.config}/<org>/<cli-name>/config.toml`), which is normally sufficient for a prod host.
+- Ad hoc hot-reload tooling (`npm run dev`, `vite dev`, `next dev`, `uv run --reload`) is fine as an unmanaged workflow while actively editing code, but is never what the lifecycle script's `start`/`run` itself invokes — that action must go through the CLI, backed by a package actually installed from the current source.
+- For Python services, run the installed CLI entrypoint (`<cli> server start`), never a raw module path, script, editable install, `PYTHONPATH` override, or an implicit `uv run` workspace resolution.
+- For frontend services, run the installed CLI/production server from the exact installed package, not the checkout's `dist/`/`build/` directory run directly.
+- In mixed frontend/backend repositories, choose the install and start commands independently for each service.
+- Fail `start`/`run` when the required installed package is absent; never fall back to source or a stale install.
 
 ## Review Checklist
 
@@ -132,23 +133,25 @@ WEB_PROD_PORT=4173
 - Does `start` fully detach and write runtime state into `.run/`?
 - Does `run` stay in the foreground?
 - Does `run` preserve service signals and exit status with `exec`?
-- Are `start`, `stop`, `restart`, and `run` always environment-specific?
-- Is the menu flow action-first, service-second when needed, and environment-last?
+- Do `start`, `stop`, `restart`, `run`, and `status` correctly take no `dev`/`prod` argument, leaving environment identity entirely to what's installed?
+- Is the menu flow action-first and service-second when needed?
 - If `all` exists, are service order, output format, and failure policy explicit?
 - Are ports centralized at the top of the relevant script?
-- Are status and health checks derived from the same service-specific and environment-specific port configuration?
+- Are status and health checks derived from the same service-specific port configuration?
 - Are duplicate starts, stale PID files, failed starts, and graceful stop timeouts handled explicitly?
 - Does `stop` avoid signaling a PID based only on a port match?
-- Does `start prod` use the exact formal package installed from the intended repository for each affected service?
+- Does `start`/`run` use the exact package actually installed on the host — a local build after `install`, or the formal package installed from the intended repository — for each affected service?
+- Does `status` report the installed package's version, not just PID/port?
+- Does `uninstall` stop the running service first and only then remove the package?
 - Are unsupported commands hidden or rejected clearly?
 
 ## Common Mistakes
 
 - Keeping all frontend and backend lifecycle logic in one giant `setup.sh` after the repository became multi-service.
 - Adding `all` without defining execution order or what happens after one service fails.
-- Combining `start dev`, `start prod`, `run dev`, and `run prod` into one flat menu.
+- Adding a `dev`/`prod` argument to `start`, `stop`, `restart`, or `run` when the installed package already fixes which one is running.
 - Guessing which service the user meant when both frontend and backend exist.
-- Managing multiple services while still using single-service runtime file names such as `.run/app.dev.pid`.
+- Managing multiple services while still using ambiguous runtime file names when a service-scoped name such as `.run/api.pid` would do.
 - Moving service-specific startup logic into `scripts/lib/` and turning the shared library into another monolith.
 - Implementing `start` in a way that dies when the terminal closes.
 - Letting `run` silently fork into the background.
@@ -156,8 +159,10 @@ WEB_PROD_PORT=4173
 - Trusting a stale PID file or killing whichever process happens to own the configured port.
 - Building commands as strings and executing them with `eval` or an unnecessary `bash -c`.
 - Leaving ports scattered across functions.
-- Pointing `prod` to a development-only command.
-- Writing logs without service and environment suffixes where collisions are possible.
+- Pointing a running service at a locally built package when the host is meant to run the registry-installed formal version, or vice versa.
+- Writing logs without service-specific naming where collisions across services are possible.
+- Hand-rolling `upgrade`/`rollback`/`uninstall` in Bash instead of delegating to the installed CLI's own subcommands.
+- Removing an installed package in `uninstall` without stopping the running service first.
 - Shipping placeholder lifecycle commands that do nothing.
 
 ## Anti-Patterns
@@ -165,5 +170,5 @@ WEB_PROD_PORT=4173
 - A single `setup.sh` that handles `api`, `web`, `admin`, and `worker` entirely through nested `case` blocks.
 - Repeated `cd` hopping across several directories to infer which service is being operated.
 - One shared PID file or one shared log file for several services.
-- Hiding aggregate behavior behind normal commands so `start dev` sometimes means one service and sometimes means all services.
+- Hiding aggregate behavior behind normal commands so `start` sometimes means one service and sometimes means all services.
 - A `scripts/lib/` folder that knows concrete package names, ports, or build output paths for individual services.

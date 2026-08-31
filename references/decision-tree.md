@@ -54,31 +54,31 @@ Report findings with concrete references when possible: wrong command path, affe
 
 ## CLI Parsing Contract
 
-- `scripts/setup.sh start prod`: in a single-service repo, run directly without prompts
-- `scripts/setup.sh start api prod`: in a multi-service repo, run directly without prompts
-- `scripts/setup.sh start all dev`: only if the repository explicitly supports aggregate operations
-- `scripts/setup.sh start`: resolve missing information interactively
-- `scripts/setup.sh`: resolve action first, then service if required, then environment if required
-- `scripts/setup.sh status api`: report every configured environment for `api` without prompting
+- `scripts/setup.sh start`: in a single-service repo, run directly without prompts
+- `scripts/setup.sh start api`: in a multi-service repo, run directly without prompts
+- `scripts/setup.sh start all`: only if the repository explicitly supports aggregate operations
+- `scripts/setup.sh`: resolve missing information interactively
+- `scripts/setup.sh`: resolve action first, then service if required — no environment step, since `start`/`stop`/`restart`/`run`/`status` never take a `dev`/`prod` argument
+- `scripts/setup.sh status api`: report `api`'s current state (including installed version) without prompting
 
-Reject or handle clearly: unknown actions, unknown services, extra positional arguments, invalid environments, and unsupported use of `all`.
+Reject or handle clearly: unknown actions, unknown services, extra positional arguments, and unsupported use of `all`.
 
-Do not open Gum menus when CLI args already specify a valid action, service, and environment.
+Do not open Gum menus when CLI args already specify a valid action and service.
 
 ## Dispatch Contract
 
 - Parse args first
 - Validate action
-- Validate or resolve service before environment when the command targets one service
+- Validate or resolve service when the command targets one service
 - If `all` is supported, resolve it as a separate dispatch path rather than pretending it is a normal service script
-- Validate or resolve environment only for environment-bound actions
+- No environment resolution step: `install` and `publish`, if the script owns them, are inherently dev-only/prod-only by name; every other action acts on whatever is currently installed
 - Reject extra args and invalid supplied values; never turn them into interactive prompts
 - Call `do_<action>` directly in single-service scripts, or call a per-service script from `setup.sh` in multi-service layouts
 
 Example mental model:
 
 ```text
-action -> needs service? -> resolve service -> needs env? -> resolve env -> dispatch -> verify runtime files and command choice
+action -> needs service? -> resolve service -> dispatch -> verify runtime files and command choice
 ```
 
 ## Review Questions
