@@ -9,7 +9,7 @@ Use this skill to make Bash service scripts consistent, predictable, and easy to
 
 Prefer the repository's existing `AGENTS.md`, `README`, or service docs when they conflict with this guide. Otherwise apply this guide as the baseline.
 
-For any production publish, install, or start path, also apply [Service Release Governance](../service-release-governance/SKILL.md). It owns formal-version, repository, package-installation, and release-gate decisions; this skill owns Bash dispatch and process lifecycle behavior.
+For any production publish, install, or start path in an npm or Python service, also apply [Service Release Governance](../service-release-governance/SKILL.md). It owns formal-version, repository, package-installation, and release-gate decisions; this skill owns Bash dispatch and process lifecycle behavior. That skill's concrete rules assume an npm/PyPI-style registry install and don't cover other ecosystems (e.g. the Flutter Web pattern in [references/runtime-patterns.md](references/runtime-patterns.md), which publishes through `funbuild`/`funpub` to a private generic artifact store instead of a language registry) — reproduce the same underlying principles (immutable versioned artifacts, no dev/prod source mixing, no serving straight from the checkout) through that ecosystem's actual tooling instead of assuming service-release-governance's registry-specific commands apply.
 
 Treat "service" as a first-class concept.
 
@@ -24,7 +24,7 @@ Read extra references only when needed:
 
 - Read [references/skeleton.md](references/skeleton.md) when you need a starter layout for `scripts/setup.sh` plus per-service scripts.
 - Read [references/rules.md](references/rules.md) when you need the full invariant list, production-entrypoint rules, or a review checklist.
-- Read [references/runtime-patterns.md](references/runtime-patterns.md) when the repository is Python- or frontend-based and you need concrete `dev` vs `prod` command patterns.
+- Read [references/runtime-patterns.md](references/runtime-patterns.md) when the repository is Python-, frontend-, or Flutter-web-based and you need concrete `dev` vs `prod` command patterns.
 - Read [references/decision-tree.md](references/decision-tree.md) when you need to choose between create, refactor, or review paths, or when CLI parsing behavior is ambiguous.
 
 ## Follow This Workflow

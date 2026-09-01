@@ -5,13 +5,16 @@ Read this file when `scripts/setup.sh` or a per-service script needs concrete ru
 - [Choose The Right Pattern](#choose-the-right-pattern)
 - [Python Pattern](#python-pattern)
 - [Frontend Pattern](#frontend-pattern)
+- [Flutter Web Pattern](#flutter-web-pattern)
 - [Backgrounding Pattern](#backgrounding-pattern)
 - [Sanity Checks](#sanity-checks)
 
 ## Choose The Right Pattern
 
 - If the repository has `pyproject.toml`, `requirements.txt`, or a Python package entrypoint, use the Python pattern for that service.
+- If the repository has `pubspec.yaml` with a `dependencies.flutter.sdk: flutter` entry, use the Flutter Web pattern for that service — check this *before* the frontend pattern's `package.json` check, mirroring `funbuild`'s own detection order (its `FlutterBuild` is tried before `NpmFrontendBuild` specifically because a Flutter web project commonly carries a secondary `package.json` for frontend tooling, which would otherwise misclassify it as a plain Node frontend).
 - If the repository has `package.json`, `vite.config.*`, `next.config.*`, or a build output directory such as `dist/`, use the frontend pattern for that service.
+- Flutter's non-web targets (Android/iOS/desktop app builds) are not a long-running service and fall outside this skill's start/stop/PID lifecycle model — treat their build/release steps as a repository-specific extension, not a `setup.sh` service.
 - If the repository has both backend and frontend runtimes, apply the matching pattern per service instead of collapsing them into one command model.
 - If neither pattern fits, preserve repository-specific conventions and still honor the core rules from [rules.md](rules.md).
 
@@ -69,6 +72,53 @@ In multi-service repositories:
 
 - keep ad hoc dev iteration scoped to the service root and `start`/`run` scoped to the installed release root
 - do not assume the frontend and backend share the same `publish` pipeline
+
+## Flutter Web Pattern
+
+Flutter web has no daemonizing production CLI of its own — `flutter build web` produces a static `build/web` directory, so a served Flutter web app is just a static-asset service. Reuse the frontend pattern's static-asset serving story rather than inventing a separate lifecycle model.
+
+[Service Release Governance](../../service-release-governance/SKILL.md) still explicitly covers npm and Python packages only — its `pip install`/`npm ci`-from-a-registry model and its ecosystem table do not include Dart/Flutter, and it has no gate rules written against `funpub`. But `funbuild` itself does have a Flutter build type (`FlutterBuild`, detected from a root `pubspec.yaml` whose `dependencies.flutter.sdk` is `flutter`), so `funbuild build`/`funbuild release` and `funbuild install` are real commands here, not a gap to route around by hand. The distribution model is just different from npm/PyPI: publish means uploading a build artifact to a private generic artifact store via `funpub`, not publishing an installable package to a language registry. Keep applying the same underlying principles service-release-governance stands for (immutable versioned artifact, no dev/prod source mixing, no serving straight from the checkout) — just through this ecosystem's actual tools instead of assuming service-release-governance's npm/PyPI-specific commands apply.
+
+`funbuild`'s default behavior for a `FlutterBuild` project, all overridable per-stage via a `funbuild:` block in `pubspec.yaml` (string or list of shell commands):
+
+| Stage | Default command |
+| --- | --- |
+| build | `flutter pub get` + `flutter build apk --release` + `flutter build web --release` |
+| install | none — a no-op unless the project's `pubspec.yaml` defines `funbuild.install` |
+| publish | `funpub upload` to the private generic repo `funpackage`: the APK direct, the `build/web` directory zipped first, to remote paths `flutter/<pubspec-name>/apk` and `flutter/<pubspec-name>/web` |
+| clean | `flutter clean` |
+
+Two consequences for a web-only service worth calling out explicitly:
+
+- The default `build`/`publish` stage builds and uploads the Android APK too, since `FlutterBuild` doesn't know the repository only ships a web target. If the service is web-only, override `funbuild.build` (and `funbuild.publish` if the APK upload should also be dropped) in `pubspec.yaml` to skip the `flutter build apk` step, e.g. `funbuild: {build: flutter build web --release}`.
+- `funbuild install` has no default behavior for Flutter — it does not promote `build/web` into a serving root on its own. If the lifecycle script's `install` action is expected to do that, either configure `funbuild.install` in `pubspec.yaml` to run the promotion command, or run `flutter build web` plus the promotion step directly in the service script instead of assuming `funbuild install` already covers it.
+
+There is no package-manager "install" step for a static bundle the way there is for npm/PyPI — "install" here means promoting a freshly built (or freshly downloaded) `build/web` into the same well-known serving root the static server reads from (e.g. a version-stamped directory plus a `current` symlink/copy step).
+
+`start`/`run` always serve whichever release is currently promoted into that serving root, regardless of whether it came from a local dev build or a downloaded production artifact. Prefer, in order of confidence:
+
+1. A static server already wrapped by an installed CLI's own `server start` (per the primary backgrounding pattern), if the repository builds one
+2. A generic static file server (existing repository convention, e.g. an already-vendored static-serving tool) pointed at the promoted `build/web` directory, outside the source checkout
+
+Avoid these as the `start`/`run` command:
+
+- `flutter run` (any target) — this is a debug/hot-reload session tied to a connected device or `web-server`/`chrome` target, not a production server
+- `flutter run -d web-server --web-port=...` used as the lifecycle daemon
+- Serving directly out of the source checkout's `build/web` without promoting it through the same serving-root convention other releases use
+
+Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way:
+
+- ad hoc dev iteration (outside the lifecycle script): `flutter run -d chrome` or `flutter run -d web-server --web-port=<port>`
+- `install` (dev-only): clear the previous local build/promoted copy, run `flutter build web` from the current working tree (via `funbuild install` only if `pubspec.yaml` configures that stage to do it), then promote the fresh `build/web` into the serving root
+- `publish` (prod-only): `funbuild build` (alias `funbuild release`) when the project's default or configured `funbuild.publish` stage matches what the repository actually wants to ship (drop the APK step first if the service is web-only, per above); otherwise call `flutter build web --release` and `funpub upload` (or the repository's configured equivalent) directly
+- production install (done outside the repo's `setup.sh`, on the prod host): `funpub download flutter/<pubspec-name>/web --version <version>` (or the repository's configured equivalent) to fetch the exact published artifact, unzip it, and promote it into the serving root — the same promotion step `install` does locally, but from the downloaded artifact instead of a fresh build
+- `start`/`run`: the static server (or wrapping CLI) pointed at whatever is currently promoted into the serving root, no dev-only reload flags, no `dev`/`prod` argument
+- `status`: PID/port plus the promoted release's version (e.g. a version file written alongside the promoted build)
+
+In multi-service repositories:
+
+- keep the Flutter web service's port and static-serving root distinct from any Python or non-Flutter frontend service
+- do not assume Flutter web shares a build/publish pipeline with a separate Node-based frontend service — even in a repository that also has one, `funbuild` picks a single build type per manifest, so a Flutter web app and a separate npm frontend are still two independently published services
 
 ## Backgrounding Pattern
 
