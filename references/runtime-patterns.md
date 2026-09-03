@@ -97,7 +97,7 @@ There is no package-manager "install" step for a static bundle the way there is 
 
 `start`/`run` always serve whichever release is currently promoted into that serving root, regardless of whether it came from a local dev build or a downloaded production artifact. Prefer, in order of confidence:
 
-1. A static server already wrapped by an installed CLI's own `server start` (per the primary backgrounding pattern), if the repository builds one
+1. A static server already wrapped by an installed CLI's own `server start` (per the primary backgrounding pattern) — see [Providing The Missing CLI](#providing-the-missing-cli-a-self-published-npm-wrapper) below when the repository doesn't already have one
 2. A generic static file server (existing repository convention, e.g. an already-vendored static-serving tool) pointed at the promoted `build/web` directory, outside the source checkout
 
 Avoid these as the `start`/`run` command:
@@ -106,14 +106,51 @@ Avoid these as the `start`/`run` command:
 - `flutter run -d web-server --web-port=...` used as the lifecycle daemon
 - Serving directly out of the source checkout's `build/web` without promoting it through the same serving-root convention other releases use
 
-Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way:
+### Providing The Missing CLI: A Self-Published npm Wrapper
 
-- ad hoc dev iteration (outside the lifecycle script): `flutter run -d chrome` or `flutter run -d web-server --web-port=<port>`
-- `install` (dev-only): clear the previous local build/promoted copy, run `flutter build web` from the current working tree (via `funbuild install` only if `pubspec.yaml` configures that stage to do it), then promote the fresh `build/web` into the serving root
-- `publish` (prod-only): `funbuild build` (alias `funbuild release`) when the project's default or configured `funbuild.publish` stage matches what the repository actually wants to ship (drop the APK step first if the service is web-only, per above); otherwise call `flutter build web --release` and `funpub upload` (or the repository's configured equivalent) directly
-- production install (done outside the repo's `setup.sh`, on the prod host): `funpub download flutter/<pubspec-name>/web --version <version>` (or the repository's configured equivalent) to fetch the exact published artifact, unzip it, and promote it into the serving root — the same promotion step `install` does locally, but from the downloaded artifact instead of a fresh build
-- `start`/`run`: the static server (or wrapping CLI) pointed at whatever is currently promoted into the serving root, no dev-only reload flags, no `dev`/`prod` argument
-- `status`: PID/port plus the promoted release's version (e.g. a version file written alongside the promoted build)
+Flutter's own build output has no daemonizing executable — `funbuild`/`funpub` version and distribute the static `build/web` artifact, but nothing in that pipeline produces a `server start`/`server run` command. To get option 1 above (the primary, CLI-owned-PID pattern) instead of falling back to option 2's generic static-file-server, build that CLI yourself as a small embedded npm package and publish it independently of the web bundle.
+
+Keep the two artifacts and their publish pipelines separate — building this CLI does not change anything about how the web bundle itself is built or published:
+
+- the Flutter web bundle: built and published via `funbuild`/`funpub`, exactly as described above
+- the CLI wrapper: a self-contained npm package, versioned and published via ordinary `npm publish`/`npm install -g`, whose only job is to daemonize, serve, and (optionally) reverse-proxy whatever web bundle is currently promoted into the serving root — it does not embed or replace the bundle itself
+
+Embedding the CLI in the app directory fixes *where* its source lives, not *which version* is compatible with which web build — decide that explicitly, or `install`/production install end up guessing. The simplest option is to keep the CLI package's version in lockstep with the app's own version (e.g. mirror `pubspec.yaml`'s `version` into `package.json` as part of `install`/`publish`) instead of letting npm semver drift independently. If the two genuinely need independent version numbers, pin the compatible pair in one place — a release manifest or a matching git tag — so no step has to guess which CLI version goes with which web bundle.
+
+Layout — embed the CLI package inside the app directory it deploys, one container level down so `extbuild/` can hold other artifact kinds later:
+
+```text
+apps/<app>/
+├── <Flutter source>
+└── extbuild/
+    └── npm-cli/
+        ├── package.json    # version is this CLI's own source of truth; must not set "private": true
+        ├── bin/cli.js
+        └── src/            # daemonize / static file serving / reverse proxy
+```
+
+Embed rather than create a sibling `<app>-cli` package: the CLI and the app it serves are two halves of one release, built and shipped together — splitting them into separate top-level packages turns "which CLI version matches which build" into something that has to be tracked separately. `extbuild/` itself stays a container, not the package root, so a future second artifact kind (a different packaging or deployment format) has somewhere to live without contending for the directory name.
+
+If the repository uses an npm/pnpm workspace, glob-match members (`apps/*/extbuild/npm-cli`) instead of listing each app by name, so a new app's CLI is picked up automatically once it follows the same layout.
+
+`package.json` must not carry `"private": true` — that field makes `npm publish` fail unconditionally with no `--force` override. Check what the app's scaffolding tool set by default before wiring up publish. Also configure an explicit publish registry/target for the CLI package rather than relying on npm's implicit default — this mirrors `service-release-governance`'s rule that every publish target in the repository must be explicit, never defaulted, so a slip doesn't push a private wrapper to the public registry.
+
+The CLI needs no runtime dependencies — implement daemonizing, static serving, and reverse-proxying with the host language's standard library. A deployment wrapper is not the place to add third-party supply-chain surface.
+
+1. **Self-daemonize.** `start` detaches into the background and must verify a short startup grace period before reporting success — a port collision or similar failure can make the detached process exit almost immediately, and a bare fork-then-return will report success anyway. Do not trust PID existence alone as proof the process is still the one that was started; PIDs get reused, so cross-check the recorded PID's command line (e.g. `/proc/<pid>/cmdline`, or the platform equivalent) against what was launched. Keep PID/log/metadata files under an XDG-style per-user config directory, namespaced by CLI name — not inside the repository or tied to a particular working directory.
+2. **Static file serving.** If an existing static-file-serving script is already in production, match its observable behavior exactly when replacing it — don't let a language/runtime swap silently change what the browser sees. At minimum: SPA route fallback, gzip negotiation, conditional requests (304), and content-type-appropriate `Cache-Control` (no-cache for HTML, long-lived/immutable for hashed static assets).
+3. **Generic reverse proxy**, when the app needs same-origin API access. Take the upstream host/port as CLI flags rather than hardcoding a specific environment's address resolution, so the package can be exercised standalone outside the repository. Strip hop-by-hop headers, cap request body size, reject ambiguous requests (e.g. both `Transfer-Encoding: chunked` and a duplicate `Content-Length`), and distinguish upstream connection failure from upstream timeout with different error responses.
+
+`start`/`run` invoke the installed CLI's own `server start`/`server run` exactly like the primary backgrounding pattern in [rules.md](rules.md#runtime-files) — no bespoke Flutter-specific process handling in the Bash lifecycle script.
+
+Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way. Once a repository has the CLI wrapper, every step below covers *two* artifacts (the web bundle and the CLI); a repository without one only has the first:
+
+- ad hoc dev iteration (outside the lifecycle script): `flutter run -d chrome` or `flutter run -d web-server --web-port=<port>` for the app; running `bin/cli.js` directly (or an npm script wrapping it) for iterating on the CLI itself
+- `install` (dev-only): clear the previous local build/promoted copy, run `flutter build web` from the current working tree (via `funbuild install` only if `pubspec.yaml` configures that stage to do it), promote the fresh `build/web` into the serving root, and `npm install -g` the CLI package from the same working tree so both come from the same commit
+- `publish` (prod-only): `funbuild build` (alias `funbuild release`) for the web bundle when the project's default or configured `funbuild.publish` stage matches what the repository wants to ship (drop the APK step first if the service is web-only, per above; otherwise call `flutter build web --release` and `funpub upload` directly), plus `npm publish` for the CLI wrapper against its explicitly configured registry
+- production install (done outside the repo's `setup.sh`, on the prod host): `funpub download flutter/<pubspec-name>/web --version <version>` to fetch and promote the web bundle, plus `npm install -g <cli-package>@<version>` to install the matching CLI version — resolve `<version>` from wherever the compatible pair is pinned (see above), not by installing whatever's latest on either side
+- `start`/`run`: the installed CLI's `server start`/`server run`, pointed at whatever is currently promoted into the serving root, no dev-only reload flags, no `dev`/`prod` argument
+- `status`: PID/port, the promoted web bundle's version, and the installed CLI package's own version — report both once they're independently versioned artifacts
 
 In multi-service repositories:
 

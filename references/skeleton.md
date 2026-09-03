@@ -4,6 +4,7 @@ Use this file only when drafting or heavily rewriting service lifecycle scripts.
 
 - [Dispatcher](#dispatcher)
 - [Per-Service Script](#per-service-script)
+- [Flutter Web CLI Package](#flutter-web-cli-package)
 - [Optional Extensions](#optional-extensions)
 
 For a multi-service repository, prefer this layout:
@@ -186,6 +187,78 @@ main "$@"
 `do_start`/`do_run`/`do_stop`/`do_status` are thin delegations: the installed CLI backgrounds itself (`server start`), stays foregrounded when asked (`server run`), and owns the PID file that `server stop`/`server status` read — this script does not `nohup` anything, write a PID file, or poll for liveness itself. If a given repository's CLI genuinely cannot daemonize itself, fall back to the `nohup`-and-PID-file pattern in [runtime-patterns.md](runtime-patterns.md#backgrounding-pattern) instead of this primary shape; in that fallback, extend the liveness check with a repository-specific identity check when a stable executable, command marker, or runtime metadata source is available, and never substitute a port-owner lookup as process identity.
 
 For a true single-service repository, keep the same validation and lifecycle boundaries in `scripts/setup.sh` and omit the dispatcher layer.
+
+## Flutter Web CLI Package
+
+Use this skeleton only for a Flutter web service that has no daemonizing CLI of its own yet, per [runtime-patterns.md](runtime-patterns.md#providing-the-missing-cli-a-self-published-npm-wrapper). This package is published via ordinary `npm publish`, independently of the `funbuild`/`funpub` pipeline that builds and distributes the web bundle it serves.
+
+```text
+apps/<app>/
+├── <Flutter source>
+└── extbuild/
+    └── npm-cli/
+        ├── package.json
+        ├── bin/cli.js
+        └── src/
+            ├── daemonize.js
+            ├── static-server.js
+            └── proxy.js
+```
+
+```json
+{
+  "name": "<app>-cli",
+  "version": "0.1.0",
+  "bin": { "<app>-cli": "bin/cli.js" },
+  "files": ["bin", "src"]
+}
+```
+
+Do not set `"private": true` — it blocks `npm publish` unconditionally. Keep `dependencies` empty; use Node's standard library for daemonizing, static serving, and proxying.
+
+```js
+#!/usr/bin/env node
+const { start, run, stop, status } = require("../src/daemonize");
+
+const [, , group, action, ...rest] = process.argv;
+
+if (group !== "server" || !["start", "run", "stop", "status"].includes(action)) {
+  console.error(`Usage: ${require("../package.json").name} server <start|run|stop|status>`);
+  process.exit(2);
+}
+
+const handlers = { start, run, stop, status };
+handlers[action](rest);
+```
+
+```js
+// src/daemonize.js (sketch — adapt PID path, args, and grace period to the repository)
+const GRACE_PERIOD_MS = 500;
+
+function start(args) {
+  // 1. reject a live PID file; report/remove a stale one
+  // 2. spawn the actual server as a detached child (stdio ignored / redirected to a log file)
+  // 3. write the child PID to an XDG-style, CLI-namespaced state dir
+  // 4. wait GRACE_PERIOD_MS, then re-check the child is still alive before reporting success
+}
+
+function run(args) {
+  // spawn the same server in the foreground; propagate its exit code directly
+}
+
+function stop(args) {
+  // read the PID file; verify the PID's command line still matches this CLI before signaling;
+  // send SIGTERM, wait, remove the PID file only after the process exits
+}
+
+function status(args) {
+  // report PID/port plus this package's own version from package.json
+}
+
+module.exports = { start, run, stop, status };
+```
+
+`src/static-server.js` and `src/proxy.js` hold the actual serving and reverse-proxy logic described in [runtime-patterns.md](runtime-patterns.md#providing-the-missing-cli-a-self-published-npm-wrapper) — SPA fallback, gzip/conditional requests/`Cache-Control` for the former; hop-by-hop header stripping, body-size limits, and ambiguous-request rejection for the latter. Keep both stateless and independent of `daemonize.js` so they can be exercised standalone in tests.
 
 ## Optional Extensions
 

@@ -173,6 +173,9 @@ WEB_PORT=4173
 - Shipping placeholder lifecycle commands that do nothing.
 - Re-implementing `nohup`/PID-file management in Bash for a CLI that already daemonizes itself and owns its own PID file.
 - Making Bash `run` call `<cli> server start` instead of the CLI's dedicated foreground subcommand, `<cli> server run`.
+- Publishing a wrapper CLI package (e.g. the embedded npm CLI in [runtime-patterns.md](runtime-patterns.md#providing-the-missing-cli-a-self-published-npm-wrapper)) with `"private": true` still set from scaffolding defaults, which blocks `npm publish` unconditionally.
+- Trusting bare PID existence as proof a backgrounded process is still the one that was started, instead of cross-checking its command line — PIDs get reused by unrelated processes.
+- Letting a wrapper CLI's own version (e.g. the embedded npm CLI's semver) drift independently of the artifact it serves with no pinned pairing recorded anywhere — "install the matching CLI version" becomes a manual guess instead of a lookup.
 
 ## Anti-Patterns
 
@@ -181,3 +184,4 @@ WEB_PORT=4173
 - One shared PID file or one shared log file for several services.
 - Hiding aggregate behavior behind normal commands so `start` sometimes means one service and sometimes means all services.
 - A `scripts/lib/` folder that knows concrete package names, ports, or build output paths for individual services.
+- A sibling `<app>-cli` package, versioned and published independently of the app it deploys, instead of embedding the CLI inside that app's own directory — this turns "which CLI version matches which build" into something that has to be tracked separately.
