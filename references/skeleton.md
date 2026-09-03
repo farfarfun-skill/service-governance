@@ -222,13 +222,14 @@ const { start, run, stop, status } = require("../src/daemonize");
 
 const [, , group, action, ...rest] = process.argv;
 
-if (group !== "server" || !["start", "run", "stop", "status"].includes(action)) {
+const handlers = { start, run, stop, status };
+
+if (group !== "server" || !handlers[action]) {
   console.error(`Usage: ${require("../package.json").name} server <start|run|stop|status>`);
   process.exit(2);
 }
 
-const handlers = { start, run, stop, status };
-handlers[action](rest);
+handlers[action].call(undefined, rest);
 ```
 
 ```js
