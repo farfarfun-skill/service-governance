@@ -1,6 +1,6 @@
 # Submodule Workspace Skeleton
 
-Starter layout for a `<product>-dev` orchestration repo with two apps (backend `<product>` and frontend `<product>-web`). Match repo names, app names, and script contents to the target product instead of copying placeholders literally.
+Starter layout for a `<product>-dev` orchestration repo with two apps (backend `<product>-api` and frontend `<product>-web`), both CLI-bearing. Match repo names, app names, and script contents to the target product instead of copying placeholders literally. See the end of this file for adding a non-CLI app (core library or plugin) once the product grows past two repos.
 
 ## Layout
 
@@ -9,7 +9,7 @@ Starter layout for a `<product>-dev` orchestration repo with two apps (backend `
 ├── README.md
 ├── .gitmodules
 ├── apps/
-│   ├── <product>/          # submodule -> https://github.com/<org>/<product>.git
+│   ├── <product>-api/      # submodule -> https://github.com/<org>/<product>-api.git
 │   └── <product>-web/      # submodule -> https://github.com/<org>/<product>-web.git
 └── scripts/
     ├── init.sh
@@ -23,16 +23,16 @@ Starter layout for a `<product>-dev` orchestration repo with two apps (backend `
 git clone https://github.com/<org>/<product>-dev.git
 cd <product>-dev
 
-git submodule add https://github.com/<org>/<product>.git apps/<product>
+git submodule add https://github.com/<org>/<product>-api.git apps/<product>-api
 git submodule add https://github.com/<org>/<product>-web.git apps/<product>-web
 ```
 
 This generates `.gitmodules`:
 
 ```ini
-[submodule "apps/<product>"]
-	path = apps/<product>
-	url = https://github.com/<org>/<product>.git
+[submodule "apps/<product>-api"]
+	path = apps/<product>-api
+	url = https://github.com/<org>/<product>-api.git
 [submodule "apps/<product>-web"]
 	path = apps/<product>-web
 	url = https://github.com/<org>/<product>-web.git
@@ -51,10 +51,10 @@ git submodule update
 #!/bin/sh
 set -e
 
-git -C apps/<product> switch master
+git -C apps/<product>-api switch master
 git -C apps/<product>-web switch master
 
-cd apps/<product>
+cd apps/<product>-api
 funbuild build
 
 cd ../..
@@ -76,7 +76,7 @@ Only add this once the workspace needs one command fanned out across every app �
 #!/bin/sh
 set -e
 
-apps="<product> <product>-web"
+apps="<product>-api <product>-web"
 action="$1"
 
 for app in $apps; do
@@ -96,7 +96,7 @@ done
 
 | 目录 | 项目 | 说明 |
 | --- | --- | --- |
-| `apps/<product>` | [<product>](https://github.com/<org>/<product>) | <one-line purpose> |
+| `apps/<product>-api` | [<product>-api](https://github.com/<org>/<product>-api) | <one-line purpose> |
 | `apps/<product>-web` | [<product>-web](https://github.com/<org>/<product>-web) | <one-line purpose> |
 
 具体的安装、配置和开发方式见各子项目 README。
@@ -120,7 +120,7 @@ bash scripts/init.sh
 
 \`\`\`bash
 git submodule update --remote
-git add apps/<product> apps/<product>-web
+git add apps/<product>-api apps/<product>-web
 \`\`\`
 
 更新后的子模块提交由当前仓库记录，需要随父仓库一起提交。
@@ -133,3 +133,16 @@ git add apps/<product> apps/<product>-web
 bash scripts/build.sh
 \`\`\`
 ```
+
+## Adding a non-CLI app (core library or plugin)
+
+Once the product grows past the frontend/backend pair — a core library the backend depends on, or a plugin/driver like a specific cloud storage integration — wire it in the same way but skip the service scripts:
+
+```bash
+git submodule add https://github.com/<org>/<product>.git apps/<product>
+git submodule add https://github.com/<org>/<product>-aliyun.git apps/<product>-aliyun
+```
+
+- Add both to `scripts/build.sh` alongside the CLI apps if they need `funbuild build`/`funbuild install` to publish a package — but never add them to `scripts/all.sh`'s service-lifecycle actions (`start`/`stop`/`status`) since nothing runs them as a process.
+- Add both to the README's app table like any other submodule; just note in the one-line purpose that it's a library/plugin, not a service (e.g. "Core domain library, consumed by `<product>-api`").
+- Do not scaffold `scripts/setup.sh`-style start/stop commands for these apps, and do not hold them to the Entrypoint Contract in review — see [references/rules.md](rules.md)'s CLI Entrypoint Requirement section.

@@ -11,9 +11,18 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 ## Naming Rules
 
 - Dev repo: `<product>-dev`.
-- Backend/core service repo: `<product>` (no suffix) when there is exactly one canonical backend; otherwise `<product>-<role>` for each (`<product>-api`, `<product>-worker`).
+- Core library repo: `<product>` (no suffix) — holds the actual domain logic that other apps depend on as an installed package. Small products without a separable library can fold this straight into `<product>-api` instead of forcing an empty split.
+- Backend/server repo: `<product>-api` — a thin service that depends on `<product>` (and any plugin repos) and exposes it to `<product>-web`. Prefer `-api` over `-server`/`-backend`/`-svc`: once the service is running it genuinely serves an API to other consumers, not just the paired frontend, so the name describes what it does rather than just "a process exists."
 - Frontend repo: `<product>-web`.
+- Plugin/driver/SDK repo: `<product>-<capability>` (e.g. `<product>-aliyun`, `<product>-oss`) — a focused integration consumed by `<product>` or `<product>-api`, or published standalone for third parties. Never reuse this pattern for another frontend or backend pairing — those always stay `-web` / `-api`.
 - Submodule path under `apps/` matches the repo name exactly — never rename the path to something shorter or different from the remote repo it tracks.
+
+## CLI Entrypoint Requirement
+
+- Only the `-web` (frontend) and `-api` (backend/server) apps must satisfy [Service Release Governance](../../service-release-governance/SKILL.md)'s Entrypoint Contract and, once they have a runnable service, [Bash Service Guide](../../bash-service-guide/SKILL.md)'s `scripts/setup.sh` pattern.
+- The core library repo (`<product>`) and plugin/driver repos (`<product>-<capability>`) are exempt — they ship as installable packages consumed by `<product>-api` or third parties, not as long-running services. Forcing a `server start` CLI onto a repo nobody starts as a process just adds unused surface.
+- Test to apply per app: "does something start this as a long-running process it then talks to?" Yes → Entrypoint Contract required. Only ever imported or `pip install`/`npm install`ed as a dependency → exempt.
+- Example: a `fundrive-dev` workspace with `apps/fundrive` (core library), `apps/fundrive-api` (backend), `apps/fundrive-web` (frontend), `apps/fundrive-aliyun` (storage-driver plugin) only holds `fundrive-api` and `fundrive-web` to the CLI requirement; `fundrive` and `fundrive-aliyun` are installed, not started.
 
 ## Script Rules
 
@@ -41,3 +50,4 @@ When reviewing a change to a `<product>-dev` repo, confirm:
 - [ ] Every submodule pointer change has a corresponding already-pushed commit in that app's own repo.
 - [ ] The README's app table still matches `.gitmodules` exactly (same set of apps, same paths).
 - [ ] `all.sh`/`setup.sh`, if present, are still exercised by an actual documented use case — remove them if they've gone stale.
+- [ ] The CLI/service Entrypoint Contract was applied to the `-web`/`-api` apps only — not skipped for either of them, and not forced onto a core-library or plugin app that nothing starts as a process.

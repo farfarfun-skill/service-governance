@@ -1,6 +1,6 @@
 ---
 name: submodule-workspace-governance
-description: Design, scaffold, or audit a "-dev" orchestration repository that aggregates independently-versioned application repositories as Git submodules under apps/, with root-level scripts/ (init.sh, build.sh, all.sh, setup.sh) that operate across all of them. Use when Codex needs to create a new <product>-dev repo, add or update a submodule under apps/, decide whether a file belongs in the dev repo or an app repo, write or review cross-repo init/build/all scripts, or explain how a multi-repo product (e.g. <product> backend + <product>-web frontend + <product>-dev orchestrator) should be split and wired together.
+description: Design, scaffold, or audit a "-dev" orchestration repository that aggregates independently-versioned application repositories as Git submodules under apps/, with root-level scripts/ (init.sh, build.sh, all.sh, setup.sh) that operate across all of them. Use when Codex needs to create a new <product>-dev repo, add or update a submodule under apps/, decide whether a file belongs in the dev repo or an app repo, write or review cross-repo init/build/all scripts, or explain how a multi-repo product (e.g. <product>-api backend + <product>-web frontend + <product>-dev orchestrator, plus optional <product> core-library and <product>-<capability> plugin apps) should be split and wired together.
 ---
 
 # Submodule Workspace Governance
@@ -16,7 +16,7 @@ Read extra references only when needed:
 
 Use a `<product>-dev` submodule workspace when any of these is true:
 
-- The product already is, or is being split into, two or more independently-deployable repositories (e.g. `<product>` backend + `<product>-web` frontend).
+- The product already is, or is being split into, two or more independently-deployable repositories (e.g. `<product>-api` backend + `<product>-web` frontend).
 - Contributors need to run backend and frontend together from matching, pinned commits during development.
 - Releases need a single record of "which commit of each app shipped together" without merging the repositories.
 
@@ -26,11 +26,13 @@ Do not use it for a single-repo product with multiple internal packages or folde
 
 | Repo | Owns | Does not own |
 | --- | --- | --- |
-| `<product>` (backend/core) | Its own source, tests, README, and lifecycle scripts (see [Bash Service Guide](../bash-service-guide/SKILL.md)) | Other apps' code; cross-repo tooling |
-| `<product>-web` (frontend) | Its own source, tests, README, and lifecycle scripts | Other apps' code; cross-repo tooling |
+| `<product>` (core library) | Domain logic and data model shared by every other app; published as an installable package | A running service of its own; cross-repo tooling |
+| `<product>-api` (backend/server) | A thin service that depends on `<product>` (and any plugin repos) and exposes it to `<product>-web`; must satisfy the Entrypoint Contract (see [Service Release Governance](../service-release-governance/SKILL.md) / [Bash Service Guide](../bash-service-guide/SKILL.md)) once it has a runnable service | Domain logic that belongs in `<product>` or a plugin repo; other apps' code |
+| `<product>-web` (frontend) | Its own source, tests, README, and lifecycle scripts; must satisfy the same Entrypoint Contract for its dev/build/serve commands | Other apps' code; cross-repo tooling |
+| `<product>-<capability>` (plugin/driver, e.g. `<product>-aliyun`) | A focused integration consumed by `<product>` or `<product>-api`, or published standalone for third parties | A CLI/service entrypoint — it ships as a library, not a process anything starts |
 | `<product>-dev` (orchestrator) | Submodule pointers, cross-repo `scripts/`, top-level README describing the set | Any application source of its own |
 
-Add more app repos as `<product>-<role>` (e.g. `<product>-worker`, `<product>-api`) and register each as its own submodule under `apps/`. Never add application code directly to the dev repo outside `apps/` — if code needs to live somewhere new, it needs its own repo and submodule entry, not a folder in the dev repo.
+Only the `-web` and `-api` apps are held to the CLI/service Entrypoint Contract — `<product>` and `<product>-<capability>` repos are installed as dependencies, not started as processes, so forcing a `server start` CLI onto them is spurious. See [references/rules.md](references/rules.md) for the full naming rationale and the CLI-requirement test. Register every app repo, CLI-bearing or not, as its own submodule under `apps/`. Never add application code directly to the dev repo outside `apps/` — if code needs to live somewhere new, it needs its own repo and submodule entry, not a folder in the dev repo.
 
 ## Follow This Workflow
 
@@ -52,7 +54,7 @@ Add more app repos as `<product>-<role>` (e.g. `<product>-worker`, `<product>-ap
    - The submodule update sequence from the next section.
    - The `scripts/build.sh` invocation and what it does.
 5. Give each new app repo a real README, not a placeholder.
-   - State the app's purpose and its relationship to sibling apps (e.g. "Web interface for `<product>`, see `<product>-dev` for the paired backend").
+   - State the app's purpose and its relationship to sibling apps (e.g. "Web interface for `<product>-api`, see `<product>-dev` for the paired backend").
    - Keep implementation-detail claims (ports, endpoints, commands) out until the app actually implements them; say the app is in early development instead of inventing behavior.
 
 ## Update Submodules Correctly
@@ -73,6 +75,7 @@ Submodule pointers and app-repo commits are two different commits in two differe
 - `all` and `setup.sh` stay optional; add them only when the workspace genuinely needs batch operations or a single entrypoint, per the same rule `bash-service-guide` applies to service scripts.
 - A submodule pointer change and the corresponding app-repo commit are always committed together as two commits in two repos, app repo first.
 - Each app repo keeps its own lifecycle scripts and release process — this skill governs composition, not what happens inside an app. Defer single-repo internal layout to `project-structure-governance` and single-service start/stop/install/publish behavior to `bash-service-guide` and `service-release-governance`.
+- The CLI/service Entrypoint Contract applies to the `-web` and `-api` apps only; a core library repo (`<product>`) or a plugin/driver repo (`<product>-<capability>`) stays exempt because nothing starts it as a process.
 
 ## Validate Before Finishing
 
