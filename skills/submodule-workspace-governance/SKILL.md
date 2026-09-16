@@ -70,6 +70,7 @@ scripts/setup.sh <action> <target>
   - **Service actions** (`start`, `stop`, `restart`, `run`, `status`, `install`, `publish`): only apply to CLI-bearing apps. `all` means "every CLI-bearing app" (`api` + `web`), not every submodule. Delegate each one straight to that app's own `scripts/setup.sh <action>` — do not reimplement PID/port handling at the dev-repo level; the app's own script already owns that per [Bash Service Guide](../bash-service-guide/SKILL.md).
   - **`build`**: applies to every app under `apps/`, CLI-bearing or not — a core-library or plugin app still needs `funbuild build`/`funbuild install` even though nothing ever `start`s it. `all` means every submodule in `.gitmodules`. Finish with one `funbuild push` at the dev-repo level regardless of how many apps were built, so the pointer bump lands as a single commit.
 - Reject an unrecognized `<target>` for a service action with a clear error instead of silently no-op'ing — running `start` against a core-library or plugin app is a usage mistake, not something to skip quietly.
+- A missing `<action>` or `<target>` should fall back to an interactive `gum choose` menu rather than erroring outright — reuse `bash-service-guide`'s `choose()` helper instead of a second interactive style. This is the one cross-repo script that needs `#!/usr/bin/env bash` (arrays, `[[ ]]`) instead of POSIX `sh`; every fully-specified invocation still skips `gum` entirely.
 - See [references/skeleton.md](references/skeleton.md) for a concrete `setup.sh` body.
 
 ## Update Submodules Correctly

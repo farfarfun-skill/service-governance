@@ -73,74 +73,127 @@ funbuild push
 
 Usage: `scripts/setup.sh <action> <target>`, where `<target>` is `api`, `web`, or `all`. `all` means something different per action group — CLI-bearing apps only for service actions, every app under `apps/` for `build`. Do not add this until the workspace has at least one `-web`/`-api` app; a workspace of core-library/plugin apps only never needs it.
 
-```sh
-#!/bin/sh
-set -e
+A missing `<action>` or `<target>` falls back to a `gum choose` menu instead of erroring immediately — reuse `bash-service-guide`'s own `choose()` helper (see its [skeleton.md](../../bash-service-guide/references/skeleton.md)) rather than inventing a second interactive style at the dev-repo level. This needs Bash (`[[ ]]`, arrays), not POSIX `sh`, unlike the other cross-repo scripts.
 
-cd "$(dirname "$0")/.."
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT}"
+
+readonly -a ACTIONS=(start stop restart run status install publish build)
+readonly -a TARGETS=(api web all)
+
+usage() {
+  printf 'Usage: %s <start|stop|restart|run|status|install|publish> <api|web|all>\n' "${0##*/}" >&2
+  printf '       %s build <api|web|all|apps/<name>>\n' "${0##*/}" >&2
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 2
+}
+
+contains() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "${item}" == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
+choose() {
+  command -v gum >/dev/null 2>&1 ||
+    die "missing argument and gum is unavailable; run with explicit arguments"
+  gum choose "$@"
+}
 
 # CLI-bearing apps only: short alias -> submodule path. Only these implement
 # the Entrypoint Contract and their own scripts/setup.sh.
 resolve_cli_app() {
   case "$1" in
-    api) echo "apps/<product>-api" ;;
-    web) echo "apps/<product>-web" ;;
-    *) echo "" ;;
+    api) printf '%s\n' "apps/<product>-api" ;;
+    web) printf '%s\n' "apps/<product>-web" ;;
+    *) return 1 ;;
   esac
 }
-cli_apps="api web"
+
+# build's target additionally accepts an explicit "apps/<name>" path (any
+# submodule, CLI-bearing or not, e.g. a core library).
+resolve_build_path() {
+  case "$1" in
+    apps/*) printf '%s\n' "$1" ;;
+    *) resolve_cli_app "$1" 2>/dev/null || printf 'apps/%s\n' "$1" ;;
+  esac
+}
 
 # Every submodule under apps/, CLI-bearing or not (core library + plugins).
 all_app_paths() {
   git submodule status | awk '{print $2}'
 }
 
-usage() {
-  echo "usage: scripts/setup.sh <start|stop|restart|run|status|install|publish> <api|web|all>" >&2
-  echo "       scripts/setup.sh build <api|web|all|apps/<name>>" >&2
-  exit 1
+dispatch_service() {
+  local action="$1" target="$2" app path
+  local -a apps
+  if [[ "${target}" == "all" ]]; then
+    apps=(api web)
+  else
+    apps=("${target}")
+  fi
+  for app in "${apps[@]}"; do
+    path="$(resolve_cli_app "${app}")" || die "not a CLI-bearing app: ${app}"
+    printf '== %s: %s ==\n' "${app}" "${action}"
+    (cd "${path}" && ./scripts/setup.sh "${action}")
+  done
 }
 
-action="$1"
-target="$2"
-[ -n "$action" ] && [ -n "$target" ] || usage
+dispatch_build() {
+  local target="$1" path
+  local -a paths
+  if [[ "${target}" == "all" ]]; then
+    mapfile -t paths < <(all_app_paths)
+  else
+    paths=("$(resolve_build_path "${target}")")
+  fi
+  for path in "${paths[@]}"; do
+    printf '== %s: build ==\n' "${path}"
+    git -C "${path}" switch master
+    (cd "${path}" && funbuild build)
+  done
+  funbuild push
+}
 
-case "$action" in
-  start|stop|restart|run|status|install|publish)
-    if [ "$target" = "all" ]; then
-      apps="$cli_apps"
-    else
-      apps="$target"
-    fi
-    for app in $apps; do
-      path="$(resolve_cli_app "$app")"
-      [ -n "$path" ] || { echo "not a CLI-bearing app: $app" >&2; exit 1; }
-      echo "== $app: $action =="
-      (cd "$path" && ./scripts/setup.sh "$action")
-    done
-    ;;
-  build)
-    if [ "$target" = "all" ]; then
-      paths="$(all_app_paths)"
-    else
-      path="$(resolve_cli_app "$target")"
-      [ -n "$path" ] || path="apps/$target"
-      paths="$path"
-    fi
-    for path in $paths; do
-      echo "== $path: build =="
-      git -C "$path" switch master
-      (cd "$path" && funbuild build)
-    done
-    funbuild push
-    ;;
-  *)
+main() {
+  local action="${1:-}"
+  local target="${2:-}"
+
+  [[ -n "${action}" ]] || action="$(choose "${ACTIONS[@]}")"
+  contains "${action}" "${ACTIONS[@]}" || {
     usage
-    ;;
-esac
+    die "unknown action: ${action}"
+  }
+
+  [[ -n "${target}" ]] || target="$(choose "${TARGETS[@]}")"
+
+  case "${action}" in
+    build) dispatch_build "${target}" ;;
+    *)
+      contains "${target}" "${TARGETS[@]}" || {
+        usage
+        die "unknown target: ${target}"
+      }
+      dispatch_service "${action}" "${target}"
+      ;;
+  esac
+}
+
+main "$@"
 ```
 
-Service actions delegate straight into the target app's own `scripts/setup.sh` (its `bash-service-guide`-compliant dispatcher) instead of reimplementing PID/port handling here. `build` runs directly against each resolved app path and always finishes with a single `funbuild push`, matching `scripts/build.sh`'s discipline above.
+Service actions delegate straight into the target app's own `scripts/setup.sh` (its `bash-service-guide`-compliant dispatcher) instead of reimplementing PID/port handling here. `build` runs directly against each resolved app path and always finishes with a single `funbuild push`, matching `scripts/build.sh`'s discipline above. Only `main`'s two `choose()` calls are interactive — every other function still requires its arguments explicitly, so a fully-specified invocation (`scripts/setup.sh start api`) never touches `gum` and works the same in CI or a script.
 
 ## scripts/all.sh (optional)
 

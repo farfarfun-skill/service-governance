@@ -137,7 +137,14 @@ cli_args() {
   # Both a locally-built install and a registry-pinned install expose the
   # same CLI; do not branch this on dev/prod.
   CLI_ARGS=(--port "${PORT}")
-  [[ -n "${CONFIG_PATH}" ]] && CLI_ARGS+=(--config "${CONFIG_PATH}")
+  # Must be `if`, not `[[ ... ]] && CLI_ARGS+=(...)`: under `set -e`, that
+  # form's exit status is the `[[ ]]` test itself when CONFIG_PATH is empty,
+  # which is 1 (false) — and being the function's last command, that 1
+  # propagates as cli_args's own return status and aborts the whole script,
+  # silently breaking start/run/restart whenever CONFIG_PATH is unset.
+  if [[ -n "${CONFIG_PATH}" ]]; then
+    CLI_ARGS+=(--config "${CONFIG_PATH}")
+  fi
 }
 
 do_start() {
