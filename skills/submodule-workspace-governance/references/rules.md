@@ -4,8 +4,9 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 
 ## Repo Boundary Rules
 
-- The dev repo's own tracked files are limited to: `README.md`, `.gitmodules`, `scripts/`, optional `docs/`, optional `logs/`, and standard repo metadata (`LICENSE`, `.gitignore`, CI config). No `src/`, no app-specific config, no application dependencies (`package.json`, `pyproject.toml`) at the dev-repo root.
-- If a file seems like it belongs to "the product" but not to any one app specifically (e.g. a shared architecture doc, a cross-app changelog), put it under `docs/` in the dev repo — do not force it into one app's repo just because that app happens to exist first.
+- The dev repo's own tracked files are limited to: `README.md`, `.gitmodules`, `scripts/`, `docs/` (required, see below), optional `logs/`, and standard repo metadata (`LICENSE`, `.gitignore`, CI config). No `src/`, no app-specific config, no application dependencies (`package.json`, `pyproject.toml`) at the dev-repo root.
+- `docs/` is required, not optional, and follows `project-structure-governance`'s document-bundle-standard layout (`docs/product|design|development|testing|retrospective|release/<feature-slug>/`, each bundle numbered from `001-overview.md`). If a file seems like it belongs to "the product" but not to any one app specifically (e.g. a shared architecture doc, a cross-app changelog, a coordinated-release writeup), put it under `docs/` in the dev repo — do not force it into one app's repo just because that app happens to exist first.
+- App repos under `apps/<name>` do not maintain their own `docs/` bundle — that would duplicate or fragment what belongs in the dev repo's `docs/`. Two exceptions: an app that is itself a nested `<something>-dev` submodule workspace owns its own `docs/` recursively; or the workspace has a dedicated `apps/<product>-doc` repo whose whole purpose is documentation. An app's own `README.md` (purpose, install, per-app usage) is unaffected by this rule — that always stays in the app repo.
 - A submodule directory (`apps/<name>`) is never `.gitignore`d and never has its contents modified by the dev repo's own commits — only `git submodule add`/`update`/pointer commits touch it from the dev-repo side.
 
 ## Naming Rules
@@ -39,7 +40,7 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 - `scripts/build.sh` must be safe to re-run: switching each app to its tracked branch before building means a dirty or detached submodule checkout doesn't silently build the wrong commit.
 - `scripts/build.sh` builds every app before running `funbuild push` once at the end — do not push after each individual app, since that produces a dev-repo commit per app instead of one atomic "these versions ship together" commit.
 - Keep `scripts/all.sh` out of the workspace until there's a concrete recurring need for a plain non-service batch loop; an unused `all` action is dead code that will drift from what the apps actually support the moment one app's interface changes.
-- `scripts/setup.sh`, once added, takes `<action> <target>`, mirroring `bash-service-guide`'s own `action -> service` resolution one level up:
+- `scripts/setup.sh` is required and takes `<action> <target>`, mirroring `bash-service-guide`'s own `action -> service` resolution one level up:
   - `<target>` is a short alias (`api`, `web`, ...) resolved to `apps/<product>-api` / `apps/<product>-web` in one place, or `all`.
   - For service actions (`start`, `stop`, `restart`, `run`, `status`, `install`, `publish`), `all` expands to CLI-bearing apps only (`api` + `web`) and each call delegates to that app's own `scripts/setup.sh <action>` — never reimplement PID/port/process handling at the dev-repo level.
   - For `build`, `all` expands to every submodule under `apps/`, CLI-bearing or not, since core-library and plugin apps still need `funbuild build`/`funbuild install` to be published even though nothing starts them as a process. Run `funbuild push` once at the end regardless of scope.
@@ -63,7 +64,8 @@ When reviewing a change to a `<product>-dev` repo, confirm:
 - [ ] `scripts/build.sh` (if touched) still switches each app to its tracked branch before building, and still runs `funbuild push` exactly once at the end.
 - [ ] Every submodule pointer change has a corresponding already-pushed commit in that app's own repo.
 - [ ] The README's app table still matches `.gitmodules` exactly (same set of apps, same paths).
-- [ ] `all.sh`/`setup.sh`, if present, are still exercised by an actual documented use case — remove them if they've gone stale.
-- [ ] `setup.sh`, if present, resolves `all` differently per action group (CLI apps only for service actions, every app under `apps/` for `build`) and rejects service actions against non-CLI targets instead of silently skipping them.
+- [ ] `scripts/setup.sh` exists (required, not optional) and resolves `all` differently per action group (CLI apps only for service actions, every app under `apps/` for `build`), rejecting service actions against non-CLI targets instead of silently skipping them.
+- [ ] `all.sh`, if present, is still exercised by an actual documented use case — remove it if it's gone stale.
 - [ ] The CLI/service Entrypoint Contract was applied to the `-web`/`-api` apps only — not skipped for either of them, and not forced onto a core-library or plugin app that nothing starts as a process.
 - [ ] `-web`'s own server reverse-proxies backend-facing paths to `-api` (not just serving static assets), the backend URL resolution follows the same flag/config/env precedence as the rest of the Entrypoint Contract, and dev tooling proxies the same target — CORS was not added to `-api` as a substitute.
+- [ ] `docs/` exists, follows the document-bundle-standard layout, and no `apps/<name>` repo has grown a parallel `docs/` bundle of its own (unless it's a nested `-dev` workspace or a dedicated `<product>-doc` repo).

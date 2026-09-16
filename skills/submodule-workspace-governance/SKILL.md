@@ -46,7 +46,7 @@ Only the `-web` and `-api` apps are held to the CLI/service Entrypoint Contract 
    - `init.sh` — `git submodule init && git submodule update`. This is the only command a new contributor needs after a plain (non `--recurse-submodules`) clone.
    - `build.sh` — for each app: switch to its tracked branch, then build it (delegate to `funbuild build`/`funbuild install` per [Service Release Governance](../service-release-governance/SKILL.md) when the app's ecosystem supports it); finish with `funbuild push` at the dev-repo level so the updated submodule pointers get committed and pushed together. Once `setup.sh` exists, `build.sh` can simply be `exec scripts/setup.sh build all` instead of duplicating the loop.
    - `all.sh` (optional) — a plain batch loop for non-service git operations across every app (`status`, `pull`, `test`), not an action/target dispatcher. Add it only once the workspace actually needs one command fanned out across every app in a defined order. Do not add it speculatively.
-   - `setup.sh` (optional, add once the workspace has at least one CLI-bearing app) — the cross-repo `<action> <target>` dispatcher for service and build actions. See "Design scripts/setup.sh" below.
+   - `setup.sh` (required, alongside `init.sh`/`build.sh`) — the cross-repo `<action> <target>` dispatcher, covering both service lifecycle (`start`/`stop`/`restart`/`run`/`status`) and release (`install`/`publish`) for every CLI-bearing app, plus `build` for every submodule. Every `<product>-dev` repo ships this from the start, same as `init.sh`/`build.sh` — it is not something to add later once a CLI-bearing app shows up. See "Design scripts/setup.sh" below.
    - See [references/skeleton.md](references/skeleton.md) for concrete script bodies.
 4. Write the dev repo README.
    - A table of `apps/<name>` -> repo link -> one-line purpose.
@@ -56,10 +56,11 @@ Only the `-web` and `-api` apps are held to the CLI/service Entrypoint Contract 
 5. Give each new app repo a real README, not a placeholder.
    - State the app's purpose and its relationship to sibling apps (e.g. "Web interface for `<product>-api`, see `<product>-dev` for the paired backend").
    - Keep implementation-detail claims (ports, endpoints, commands) out until the app actually implements them; say the app is in early development instead of inventing behavior.
+6. Create `docs/` in the dev repo, following `project-structure-governance`'s document-bundle-standard layout (`product/`, `design/`, `development/`, `testing/`, `retrospective/`, `release/`, each `<feature-slug>` directory starting from `001-overview.md`). See [references/skeleton.md](references/skeleton.md)'s `docs/` section. Individual `apps/<name>` repos do not get their own `docs/` — cross-app and product-level documentation centralizes here, except for an app that is itself a nested `<something>-dev` workspace, or a dedicated `apps/<product>-doc` repo.
 
 ## Design scripts/setup.sh
 
-Once the workspace has at least one CLI-bearing app (`-web` or `-api`), give `scripts/setup.sh` the same `<action> <target>` shape `bash-service-guide` uses inside each app, one level up:
+Every `<product>-dev` repo gets a `scripts/setup.sh` from the start — give it the same `<action> <target>` shape `bash-service-guide` uses inside each app, one level up:
 
 ```
 scripts/setup.sh <action> <target>
@@ -87,18 +88,20 @@ Submodule pointers and app-repo commits are two different commits in two differe
 
 - One app repo per Git submodule under `apps/<app-name>`; no application source lives directly in the dev repo.
 - `.gitmodules` entries are only ever produced by `git submodule add`/`git submodule sync`, never hand-written from scratch.
-- `scripts/init.sh` is the minimum viable cross-repo script: init + update, nothing else required.
-- `all.sh` and `setup.sh` stay optional; add them only when the workspace genuinely needs batch operations or a single entrypoint, per the same rule `bash-service-guide` applies to service scripts.
-- Where `setup.sh` exists, `all` means different things for different actions: for service actions (`start`/`stop`/`restart`/`run`/`status`/`install`/`publish`) it scopes to CLI-bearing apps only (`api` + `web`); for `build` it scopes to every app under `apps/`, including core-library and plugin apps. Never conflate the two.
+- `scripts/init.sh`, `scripts/build.sh`, and `scripts/setup.sh` are all required in every dev repo — `init.sh` is init + update, nothing else; `build.sh` builds every app and finishes with `funbuild push`; `setup.sh` is the single cross-repo entrypoint that must cover both release (`install`/`publish`/`build`) and service lifecycle (`start`/`stop`/`restart`/`run`/`status`) so nobody has to `cd` into an app or hand-roll `funbuild`/CLI invocations from the dev repo root. `all.sh` stays optional — add it only when the workspace genuinely needs a plain batch loop beyond what `setup.sh` already dispatches.
+- In `setup.sh`, `all` means different things for different actions: for service actions (`start`/`stop`/`restart`/`run`/`status`/`install`/`publish`) it scopes to CLI-bearing apps only (`api` + `web`); for `build` it scopes to every app under `apps/`, including core-library and plugin apps. Never conflate the two.
 - A submodule pointer change and the corresponding app-repo commit are always committed together as two commits in two repos, app repo first.
 - Each app repo keeps its own lifecycle scripts and release process — this skill governs composition, not what happens inside an app. Defer single-repo internal layout to `project-structure-governance` and single-service start/stop/install/publish behavior to `bash-service-guide` and `service-release-governance`.
 - The CLI/service Entrypoint Contract applies to the `-web` and `-api` apps only; a core library repo (`<product>`) or a plugin/driver repo (`<product>-<capability>`) stays exempt because nothing starts it as a process.
 - `<product>-web`'s own runtime server always reverse-proxies backend-facing paths to `<product>-api` — it is never just a static-file server once the two deploy separately. See [references/rules.md](references/rules.md)'s Web App Proxy Requirement.
+- `docs/` is required in the dev repo and follows `project-structure-governance`'s document-bundle-standard layout. App repos under `apps/` do not maintain their own `docs/` — that content centralizes in the dev repo — except an app that is itself a nested `<something>-dev` workspace, or a dedicated `apps/<product>-doc` repo.
 
 ## Validate Before Finishing
 
 - `git submodule status` from the dev repo root shows no unexpected `+` (pointer ahead of what's committed) or `-` (submodule not initialized) markers for apps you touched.
 - Every `apps/<name>` entry in `.gitmodules` has a matching row in the dev repo README's app table.
+- `scripts/init.sh`, `scripts/build.sh`, and `scripts/setup.sh` all exist; `scripts/setup.sh --help`/usage output covers `install`/`publish` and `start`/`stop`/`restart`/`run`/`status` for every CLI-bearing app plus `build` for every submodule.
+- `docs/` exists and follows the document-bundle-standard layout (`NNN-kebab-case.md`, each bundle starting from `001-overview.md`); no `apps/<name>` repo has grown its own parallel `docs/` bundle unless it's a nested `-dev` workspace or a dedicated `<product>-doc` repo.
 - `bash -n` any touched shell script.
 - If you changed an app repo, confirm its own commit is pushed before you commit the dev repo's pointer update.
 - If you touched `<product>-web`, confirm it still proxies backend-facing paths to `<product>-api` (not just serving static assets) and that dev-time tooling proxies the same backend URL as the production server.

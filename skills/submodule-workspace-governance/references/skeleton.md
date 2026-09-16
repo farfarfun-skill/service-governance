@@ -11,10 +11,11 @@ Starter layout for a `<product>-dev` orchestration repo with two apps (backend `
 ├── apps/
 │   ├── <product>-api/      # submodule -> https://github.com/<org>/<product>-api.git
 │   └── <product>-web/      # submodule -> https://github.com/<org>/<product>-web.git
+├── docs/                    # required; document-bundle-standard layout, see below
 └── scripts/
     ├── init.sh
     ├── build.sh
-    ├── setup.sh             # optional, add once there's a CLI-bearing app
+    ├── setup.sh             # required, alongside init.sh/build.sh
     └── all.sh                # optional, add only when needed
 ```
 
@@ -69,9 +70,9 @@ funbuild push
 
 `funbuild push` runs at the dev-repo level after both apps build, so the resulting submodule pointer bump is committed and pushed as part of the same operation. See [Service Release Governance](../../service-release-governance/SKILL.md) for what `funbuild build`/`funbuild install` do per ecosystem.
 
-## scripts/setup.sh (optional, add once there's a CLI-bearing app)
+## scripts/setup.sh (required, alongside init.sh/build.sh)
 
-Usage: `scripts/setup.sh <action> <target>`, where `<target>` is `api`, `web`, or `all`. `all` means something different per action group — CLI-bearing apps only for service actions, every app under `apps/` for `build`. Do not add this until the workspace has at least one `-web`/`-api` app; a workspace of core-library/plugin apps only never needs it.
+Usage: `scripts/setup.sh <action> <target>`, where `<target>` is `api`, `web`, or `all`. `all` means something different per action group — CLI-bearing apps only for service actions, every app under `apps/` for `build`. Every `<product>-dev` repo ships this from the start; even a workspace of core-library/plugin apps only still needs `setup.sh build all` to build/publish them (service actions simply have no `api`/`web` alias to resolve until a CLI-bearing app is added).
 
 A missing `<action>` or `<target>` falls back to a `gum choose` menu instead of erroring immediately — reuse `bash-service-guide`'s own `choose()` helper (see its [skeleton.md](../../bash-service-guide/references/skeleton.md)) rather than inventing a second interactive style at the dev-repo level. This needs Bash (`[[ ]]`, arrays), not POSIX `sh`, unlike the other cross-repo scripts.
 
@@ -260,6 +261,31 @@ git add apps/<product>-api apps/<product>-web
 bash scripts/build.sh
 \`\`\`
 ```
+
+## docs/ (required)
+
+The dev repo is where cross-app product documentation lives — layout follows `project-structure-governance`'s `document-bundle-standard.md` (a separate skill repo; see its `references/document-bundle-standard.md`) exactly, scoped to `<product>-dev` instead of a single app:
+
+```text
+docs/
+├── product/<feature-slug>/
+│   └── 001-overview.md, 002-..., ...
+├── design/<feature-slug>/
+│   └── 001-overview.md, ...
+├── development/<feature-slug>/
+│   └── 001-overview.md, ...          # cross-app architecture, API contracts between -api and -web, etc.
+├── testing/<feature-slug>/
+│   └── 001-overview.md, test-cases/, test-report/
+├── retrospective/<feature-slug>/
+│   └── 001-overview.md, ...
+└── release/<date>-<issue-key>-<slug>/
+    └── 001-overview.md, ...          # one directory per coordinated multi-app release
+```
+
+Every document package still opens with `001-overview.md` and uses the same `NNN-kebab-case.md` numbering the standard defines — do not invent a different scheme at the dev-repo level.
+
+- Individual `apps/<name>` repos do not maintain their own `docs/` — a shared/cross-app doc (architecture, a changelog spanning `-api` and `-web`, a release retrospective) belongs in the dev repo's `docs/`, not duplicated or split across app repos. An app's own `README.md` (purpose, install, per-app usage) stays in that app repo; that is not a `docs/` bundle and is unaffected by this rule.
+- Two exceptions, both still resolved by `project-structure-governance`, just one level down: an app that is itself a nested `<something>-dev` submodule workspace owns its own `docs/` the same way, recursively; or the workspace adds a dedicated `apps/<product>-doc` repo whose entire purpose is documentation (e.g. a docs site or knowledge base), in which case that repo owns `docs/`-bundle content instead of the parent dev repo. Do not create a `<product>-doc` app speculatively — only once product docs have outgrown what fits in the dev repo's own `docs/`.
 
 ## Adding a non-CLI app (core library or plugin)
 
