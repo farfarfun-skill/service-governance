@@ -29,7 +29,12 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 - `scripts/init.sh` must work from a plain `git clone` (no `--recurse-submodules`) with zero arguments and zero prompts.
 - `scripts/build.sh` must be safe to re-run: switching each app to its tracked branch before building means a dirty or detached submodule checkout doesn't silently build the wrong commit.
 - `scripts/build.sh` builds every app before running `funbuild push` once at the end — do not push after each individual app, since that produces a dev-repo commit per app instead of one atomic "these versions ship together" commit.
-- Keep `scripts/all.sh` and `scripts/setup.sh` out of the workspace until there's a concrete recurring need; an unused `all` action is dead code that will drift from what the apps actually support the moment one app's interface changes.
+- Keep `scripts/all.sh` out of the workspace until there's a concrete recurring need for a plain non-service batch loop; an unused `all` action is dead code that will drift from what the apps actually support the moment one app's interface changes.
+- `scripts/setup.sh`, once added, takes `<action> <target>`, mirroring `bash-service-guide`'s own `action -> service` resolution one level up:
+  - `<target>` is a short alias (`api`, `web`, ...) resolved to `apps/<product>-api` / `apps/<product>-web` in one place, or `all`.
+  - For service actions (`start`, `stop`, `restart`, `run`, `status`, `install`, `publish`), `all` expands to CLI-bearing apps only (`api` + `web`) and each call delegates to that app's own `scripts/setup.sh <action>` — never reimplement PID/port/process handling at the dev-repo level.
+  - For `build`, `all` expands to every submodule under `apps/`, CLI-bearing or not, since core-library and plugin apps still need `funbuild build`/`funbuild install` to be published even though nothing starts them as a process. Run `funbuild push` once at the end regardless of scope.
+  - A service action against a target that resolves to a non-CLI app (core library or plugin) is a usage error, not a silent no-op — fail loudly with a clear message.
 - Any script that touches more than one app must state the order apps are processed in and what happens on partial failure (stop at first failure, matching `set -e`, unless the workspace has an explicit reason to continue).
 
 ## Submodule Pointer Discipline
@@ -50,4 +55,5 @@ When reviewing a change to a `<product>-dev` repo, confirm:
 - [ ] Every submodule pointer change has a corresponding already-pushed commit in that app's own repo.
 - [ ] The README's app table still matches `.gitmodules` exactly (same set of apps, same paths).
 - [ ] `all.sh`/`setup.sh`, if present, are still exercised by an actual documented use case — remove them if they've gone stale.
+- [ ] `setup.sh`, if present, resolves `all` differently per action group (CLI apps only for service actions, every app under `apps/` for `build`) and rejects service actions against non-CLI targets instead of silently skipping them.
 - [ ] The CLI/service Entrypoint Contract was applied to the `-web`/`-api` apps only — not skipped for either of them, and not forced onto a core-library or plugin app that nothing starts as a process.
