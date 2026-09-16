@@ -24,6 +24,15 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 - Test to apply per app: "does something start this as a long-running process it then talks to?" Yes → Entrypoint Contract required. Only ever imported or `pip install`/`npm install`ed as a dependency → exempt.
 - Example: a `fundrive-dev` workspace with `apps/fundrive` (core library), `apps/fundrive-api` (backend), `apps/fundrive-web` (frontend), `apps/fundrive-aliyun` (storage-driver plugin) only holds `fundrive-api` and `fundrive-web` to the CLI requirement; `fundrive` and `fundrive-aliyun` are installed, not started.
 
+## Web App Proxy Requirement
+
+- `<product>-web`'s own runtime server does two jobs, not one: serve the built static assets under its base path, and reverse-proxy every backend-facing path (`/api/**`, plus anything else `<product>-api` exposes to the browser, e.g. `/healthz`) straight through to `<product>-api`'s base URL.
+- This is not optional once `-web` and `-api` deploy to different origins/ports: without the proxy, the browser calls `<product>-api` directly and hits CORS, because `-api` is not expected to run CORS middleware — the paired `-web` proxy is what keeps every browser request same-origin. Do not "fix" this by adding CORS headers to `-api` instead; that reopens the backend to arbitrary origins and duplicates a concern the proxy already owns.
+- Resolve the backend base URL with the same precedence the Entrypoint Contract already uses elsewhere: an explicit CLI flag (e.g. `--backend`) overrides a config-file field, which overrides an env var (e.g. `<PRODUCT>_API_BASE_URL`), which falls back to a hardcoded local-dev default (`http://127.0.0.1:<api-port>`).
+- Point dev-time tooling (Vite/webpack devServer proxy, etc.) at the same env var so a local dev session (`pnpm dev`, etc.) proxies exactly like the packaged CLI's production server — no separate, drifting proxy config for dev vs. prod.
+- Routing must be unambiguous: proxy paths never fall through to the SPA `index.html` fallback, and static-asset paths never get proxied.
+- Worked example: `funflix-web`'s `server/app.js` (routes `/` → redirect, `/api/**` + `/healthz` → proxy, `/web/**` → static+SPA fallback) and `server/proxy.js` (the actual reverse proxy, plain `node:http`/`node:https`, no dependency) implement this; its `vite.config.ts` dev-time `server.proxy` block targets the same `FUNFLIX_API_BASE_URL` env var the production CLI reads via `--backend`/config/env.
+
 ## Script Rules
 
 - `scripts/init.sh` must work from a plain `git clone` (no `--recurse-submodules`) with zero arguments and zero prompts.
@@ -57,3 +66,4 @@ When reviewing a change to a `<product>-dev` repo, confirm:
 - [ ] `all.sh`/`setup.sh`, if present, are still exercised by an actual documented use case — remove them if they've gone stale.
 - [ ] `setup.sh`, if present, resolves `all` differently per action group (CLI apps only for service actions, every app under `apps/` for `build`) and rejects service actions against non-CLI targets instead of silently skipping them.
 - [ ] The CLI/service Entrypoint Contract was applied to the `-web`/`-api` apps only — not skipped for either of them, and not forced onto a core-library or plugin app that nothing starts as a process.
+- [ ] `-web`'s own server reverse-proxies backend-facing paths to `-api` (not just serving static assets), the backend URL resolution follows the same flag/config/env precedence as the rest of the Entrypoint Contract, and dev tooling proxies the same target — CORS was not added to `-api` as a substitute.

@@ -28,11 +28,11 @@ Do not use it for a single-repo product with multiple internal packages or folde
 | --- | --- | --- |
 | `<product>` (core library) | Domain logic and data model shared by every other app; published as an installable package | A running service of its own; cross-repo tooling |
 | `<product>-api` (backend/server) | A thin service that depends on `<product>` (and any plugin repos) and exposes it to `<product>-web`; must satisfy the Entrypoint Contract (see [Service Release Governance](../service-release-governance/SKILL.md) / [Bash Service Guide](../bash-service-guide/SKILL.md)) once it has a runnable service | Domain logic that belongs in `<product>` or a plugin repo; other apps' code |
-| `<product>-web` (frontend) | Its own source, tests, README, and lifecycle scripts; must satisfy the same Entrypoint Contract for its dev/build/serve commands | Other apps' code; cross-repo tooling |
+| `<product>-web` (frontend) | Its own source, tests, README, and lifecycle scripts; must satisfy the same Entrypoint Contract for its dev/build/serve commands; must reverse-proxy backend-facing paths (`/api`, health checks, ...) to `<product>-api` | Other apps' code; cross-repo tooling; CORS handling on the `-api` side |
 | `<product>-<capability>` (plugin/driver, e.g. `<product>-aliyun`) | A focused integration consumed by `<product>` or `<product>-api`, or published standalone for third parties | A CLI/service entrypoint — it ships as a library, not a process anything starts |
 | `<product>-dev` (orchestrator) | Submodule pointers, cross-repo `scripts/`, top-level README describing the set | Any application source of its own |
 
-Only the `-web` and `-api` apps are held to the CLI/service Entrypoint Contract — `<product>` and `<product>-<capability>` repos are installed as dependencies, not started as processes, so forcing a `server start` CLI onto them is spurious. See [references/rules.md](references/rules.md) for the full naming rationale and the CLI-requirement test. Register every app repo, CLI-bearing or not, as its own submodule under `apps/`. Never add application code directly to the dev repo outside `apps/` — if code needs to live somewhere new, it needs its own repo and submodule entry, not a folder in the dev repo.
+Only the `-web` and `-api` apps are held to the CLI/service Entrypoint Contract — `<product>` and `<product>-<capability>` repos are installed as dependencies, not started as processes, so forcing a `server start` CLI onto them is spurious. See [references/rules.md](references/rules.md) for the full naming rationale and the CLI-requirement test. `-web` additionally owns reverse-proxying its own runtime traffic to the paired `-api` backend so a browser never calls `-api` cross-origin after the two deploy to different hosts/ports — see [references/rules.md](references/rules.md)'s Web App Proxy Requirement. Register every app repo, CLI-bearing or not, as its own submodule under `apps/`. Never add application code directly to the dev repo outside `apps/` — if code needs to live somewhere new, it needs its own repo and submodule entry, not a folder in the dev repo.
 
 ## Follow This Workflow
 
@@ -92,6 +92,7 @@ Submodule pointers and app-repo commits are two different commits in two differe
 - A submodule pointer change and the corresponding app-repo commit are always committed together as two commits in two repos, app repo first.
 - Each app repo keeps its own lifecycle scripts and release process — this skill governs composition, not what happens inside an app. Defer single-repo internal layout to `project-structure-governance` and single-service start/stop/install/publish behavior to `bash-service-guide` and `service-release-governance`.
 - The CLI/service Entrypoint Contract applies to the `-web` and `-api` apps only; a core library repo (`<product>`) or a plugin/driver repo (`<product>-<capability>`) stays exempt because nothing starts it as a process.
+- `<product>-web`'s own runtime server always reverse-proxies backend-facing paths to `<product>-api` — it is never just a static-file server once the two deploy separately. See [references/rules.md](references/rules.md)'s Web App Proxy Requirement.
 
 ## Validate Before Finishing
 
@@ -99,3 +100,4 @@ Submodule pointers and app-repo commits are two different commits in two differe
 - Every `apps/<name>` entry in `.gitmodules` has a matching row in the dev repo README's app table.
 - `bash -n` any touched shell script.
 - If you changed an app repo, confirm its own commit is pushed before you commit the dev repo's pointer update.
+- If you touched `<product>-web`, confirm it still proxies backend-facing paths to `<product>-api` (not just serving static assets) and that dev-time tooling proxies the same backend URL as the production server.
