@@ -1,0 +1,57 @@
+name: Validate skills
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill:
+          - skills/service-release-governance
+          - skills/bash-service-guide
+          - skills/submodule-workspace-governance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate skill metadata
+        env:
+          SKILL_DIR: ${{ matrix.skill }}
+        run: |
+          python - <<'PY'
+          import re
+          import os
+          from pathlib import Path
+
+          skill_dir = Path(os.environ["SKILL_DIR"])
+          text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+          expected_name = skill_dir.name
+          match = re.match(r"^---\nname: ([a-z0-9-]+)\ndescription: .+\n---\n", text)
+          assert match, f"{skill_dir}: invalid SKILL.md frontmatter"
+          assert match.group(1) == expected_name, f"{skill_dir}: name must match directory"
+          assert (skill_dir / "agents/openai.yaml").is_file(), f"{skill_dir}: missing agents/openai.yaml"
+          PY
+
+  repository-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check local Markdown links
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          errors = []
+          for source in Path(".").rglob("*.md"):
+              text = source.read_text(encoding="utf-8")
+              for target in re.findall(r"\[[^]]+\]\(([^)#]+)(?:#[^)]+)?\)", text):
+                  if "://" not in target and not (source.parent / target).resolve().exists():
+                      errors.append(f"{source}: missing {target}")
+          assert not errors, "\n".join(errors)
+          PY

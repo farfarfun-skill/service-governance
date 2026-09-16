@@ -1,0 +1,4 @@
+interface:
+  display_name: "Submodule Workspace Governance"
+  short_description: "Scaffold and audit -dev submodule workspaces for multi-repo products"
+  default_prompt: "Use $submodule-workspace-governance to scaffold or audit this <product>-dev repository's apps/ submodules and scripts/ layout."
