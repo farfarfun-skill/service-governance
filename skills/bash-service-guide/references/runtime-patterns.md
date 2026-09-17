@@ -22,7 +22,7 @@ Read this file when `scripts/setup.sh` or a per-service script needs concrete ru
 
 `start`/`run` always use the installed console-script entrypoint, regardless of whether the install came from a local build or the registry. Prefer, in order of confidence:
 
-1. A console script from whichever package is currently installed (a locally built copy after `install`, or the exact formal package after a registry install)
+1. A console script from whichever package is currently installed (a locally built copy after `install-dev`, or the exact formal package after `install-prod`)
 2. `python -m package` using that same environment, with the working directory outside the source checkout
 
 Avoid these as the `start`/`run` command, in either case:
@@ -32,13 +32,15 @@ Avoid these as the `start`/`run` command, in either case:
 - `uv run <command>` when it can resolve the current workspace or an editable install
 - Dev-only reload servers used as the lifecycle script's daemon
 
-Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way:
+Typical split — `install-dev`, `install-prod`, and `publish` are the environment-specific actions; `start`/`run`/`stop`/`status` are identical either way:
 
 - ad hoc dev iteration (outside the lifecycle script): local dev server, reloader, or `uv run ... --reload`
-- `install` (dev-only): clear previous build/install, rebuild, force-reinstall the wheel locally (`funbuild install` when available)
+- `install-dev` (dev-only): clear previous build/install, rebuild, force-reinstall the wheel locally (`funbuild install` when available)
 - `publish` (prod-only): `funbuild build` (alias `funbuild release`) or the existing Python release command
-- production install (done outside the repo's `setup.sh`, on the prod host): exact package version from the repository chosen by `service-release-governance`, via `pip`/`uv pip` or the installed CLI's own `upgrade`/`rollback` subcommand
+- `install-prod [version]` (prod-only): the first install on a host — `pip install <pkg>[==<version>]`/`uv pip install <pkg>[==<version>]` directly, since there's no CLI yet to delegate to; omit the version to install whatever's current without disturbing an existing install
+- `upgrade [version]`/`rollback <version>`: once installed, move to the latest/an explicit version via the installed CLI's own subcommand if it has one, otherwise `pip install <pkg> -U`/`pip install <pkg>==<version>` directly
 - `start`/`run`: the installed CLI or module entrypoint, no dev-only reload flags or source-path overrides, no `dev`/`prod` argument
+- `stop`: terminate via `funshell port <port> --kill`; a Python CLI should depend on the `funshell` package directly and call its port-kill API in-process rather than shelling out to the `funshell` command
 - `status`: PID/port plus the installed package's version
 
 In multi-service repositories:
@@ -59,13 +61,15 @@ Avoid these as the `start`/`run` command:
 - `next dev`
 - Any hot-reload or watch command
 
-Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way:
+Typical split — `install-dev`, `install-prod`, and `publish` are the environment-specific actions; `start`/`run`/`stop`/`status` are identical either way:
 
 - ad hoc dev iteration (outside the lifecycle script): `npm run dev`, `pnpm dev`, or framework-equivalent local dev server
-- `install` (dev-only): clear previous build/install, rebuild (`npm run build`), install the built package locally (`funbuild install` when available)
+- `install-dev` (dev-only): clear previous build/install, rebuild (`npm run build`), install the built package locally (`funbuild install` when available)
 - `publish` (prod-only): build and upload the formal package through the configured registry
-- production install (done outside the repo's `setup.sh`, on the prod host): exact package version from that registry, via `npm install -g`/`npm ci` or the installed CLI's own `upgrade`/`rollback` subcommand
+- `install-prod [version]` (prod-only): the first install on a host — `npm install -g <pkg>[@<version>]` directly, since there's no CLI yet to delegate to; omit the version to install whatever's current without disturbing an existing install
+- `upgrade [version]`/`rollback <version>`: once installed, move to the latest/an explicit version via the installed CLI's own subcommand if it has one, otherwise `npm install -g <pkg>@latest`/`npm install -g <pkg>@<version>` directly
 - `start`/`run`: SSR server or static asset command against whichever installed release is currently on the host, no `dev`/`prod` argument
+- `stop`: terminate via `funshell port <port> --kill`; a non-Python CLI shells out to the `funshell` command rather than depending on the (Python) `funshell` package
 - `status`: PID/port plus the installed package's version
 
 In multi-service repositories:
@@ -91,7 +95,7 @@ Flutter web has no daemonizing production CLI of its own — `flutter build web`
 Two consequences for a web-only service worth calling out explicitly:
 
 - The default `build`/`publish` stage builds and uploads the Android APK too, since `FlutterBuild` doesn't know the repository only ships a web target. If the service is web-only, override `funbuild.build` (and `funbuild.publish` if the APK upload should also be dropped) in `pubspec.yaml` to skip the `flutter build apk` step, e.g. `funbuild: {build: flutter build web --release}`.
-- `funbuild install` has no default behavior for Flutter — it does not promote `build/web` into a serving root on its own. If the lifecycle script's `install` action is expected to do that, either configure `funbuild.install` in `pubspec.yaml` to run the promotion command, or run `flutter build web` plus the promotion step directly in the service script instead of assuming `funbuild install` already covers it.
+- `funbuild install` has no default behavior for Flutter — it does not promote `build/web` into a serving root on its own. If the lifecycle script's `install-dev` action is expected to do that, either configure `funbuild.install` in `pubspec.yaml` to run the promotion command, or run `flutter build web` plus the promotion step directly in the service script instead of assuming `funbuild install` already covers it.
 
 There is no package-manager "install" step for a static bundle the way there is for npm/PyPI — "install" here means promoting a freshly built (or freshly downloaded) `build/web` into the same well-known serving root the static server reads from (e.g. a version-stamped directory plus a `current` symlink/copy step).
 
@@ -115,7 +119,7 @@ Keep the two artifacts and their publish pipelines separate — building this CL
 - the Flutter web bundle: built and published via `funbuild`/`funpub`, exactly as described above
 - the CLI wrapper: a self-contained npm package, versioned and published via ordinary `npm publish`/`npm install -g`, whose only job is to daemonize, serve, and (optionally) reverse-proxy whatever web bundle is currently promoted into the serving root — it does not embed or replace the bundle itself
 
-Embedding the CLI in the app directory fixes *where* its source lives, not *which version* is compatible with which web build — decide that explicitly, or `install`/production install end up guessing. The simplest option is to keep the CLI package's version in lockstep with the app's own version (e.g. mirror `pubspec.yaml`'s `version` into `package.json` as part of `install`/`publish`) instead of letting npm semver drift independently. If the two genuinely need independent version numbers, pin the compatible pair in one place — a release manifest or a matching git tag — so no step has to guess which CLI version goes with which web bundle.
+Embedding the CLI in the app directory fixes *where* its source lives, not *which version* is compatible with which web build — decide that explicitly, or `install-dev`/`install-prod` end up guessing. The simplest option is to keep the CLI package's version in lockstep with the app's own version (e.g. mirror `pubspec.yaml`'s `version` into `package.json` as part of `install-dev`/`publish`) instead of letting npm semver drift independently. If the two genuinely need independent version numbers, pin the compatible pair in one place — a release manifest or a matching git tag — so no step has to guess which CLI version goes with which web bundle.
 
 Layout — embed the CLI package inside the app directory it deploys, one container level down so `extbuild/` can hold other artifact kinds later:
 
@@ -143,13 +147,15 @@ The CLI needs no runtime dependencies — implement daemonizing, static serving,
 
 `start`/`run` invoke the installed CLI's own `server start`/`server run` exactly like the primary backgrounding pattern in [rules.md](rules.md#runtime-files) — no bespoke Flutter-specific process handling in the Bash lifecycle script.
 
-Typical split — only `install` and `publish` are environment-specific; `start`/`run`/`stop`/`status` are identical either way. Once a repository has the CLI wrapper, every step below covers *two* artifacts (the web bundle and the CLI); a repository without one only has the first:
+Typical split — `install-dev`, `install-prod`, and `publish` are the environment-specific actions; `start`/`run`/`stop`/`status` are identical either way. Once a repository has the CLI wrapper, every step below covers *two* artifacts (the web bundle and the CLI); a repository without one only has the first:
 
 - ad hoc dev iteration (outside the lifecycle script): `flutter run -d chrome` or `flutter run -d web-server --web-port=<port>` for the app; running `bin/cli.js` directly (or an npm script wrapping it) for iterating on the CLI itself
-- `install` (dev-only): clear the previous local build/promoted copy, run `flutter build web` from the current working tree (via `funbuild install` only if `pubspec.yaml` configures that stage to do it), promote the fresh `build/web` into the serving root, and `npm install -g` the CLI package from the same working tree so both come from the same commit
+- `install-dev` (dev-only): clear the previous local build/promoted copy, run `flutter build web` from the current working tree (via `funbuild install` only if `pubspec.yaml` configures that stage to do it), promote the fresh `build/web` into the serving root, and `npm install -g` the CLI package from the same working tree so both come from the same commit
 - `publish` (prod-only): `funbuild build` (alias `funbuild release`) for the web bundle when the project's default or configured `funbuild.publish` stage matches what the repository wants to ship (drop the APK step first if the service is web-only, per above; otherwise call `flutter build web --release` and `funpub upload` directly), plus `npm publish` for the CLI wrapper against its explicitly configured registry
-- production install (done outside the repo's `setup.sh`, on the prod host): `funpub download flutter/<pubspec-name>/web --version <version>` to fetch and promote the web bundle, plus `npm install -g <cli-package>@<version>` to install the matching CLI version — resolve `<version>` from wherever the compatible pair is pinned (see above), not by installing whatever's latest on either side
+- `install-prod <version>` (prod-only): the first install on a host — `funpub download flutter/<pubspec-name>/web --version <version>` to fetch and promote the web bundle, plus `npm install -g <cli-package>@<version>` to install the matching CLI version. Unlike the single-artifact ecosystems, `<version>` is mandatory here rather than optional: there is no meaningful "latest" across two independently versioned artifacts without first resolving the pinned compatible pair (see above)
+- `upgrade [version]`/`rollback <version>`: repeat the same two-artifact `install-prod` step at a different pinned pair — there is no separate CLI self-upgrade subcommand spanning two artifacts, so both actions reduce to `install-prod` at the new pair
 - `start`/`run`: the installed CLI's `server start`/`server run`, pointed at whatever is currently promoted into the serving root, no dev-only reload flags, no `dev`/`prod` argument
+- `stop`: terminate via `funshell port <port> --kill`; this CLI wrapper is npm-based, so it shells out to the `funshell` command rather than depending on the (Python) `funshell` package
 - `status`: PID/port, the promoted web bundle's version, and the installed CLI package's own version — report both once they're independently versioned artifacts
 
 In multi-service repositories:
@@ -197,6 +203,15 @@ do_run() {
 }
 ```
 
+Stop under this fallback:
+
+```bash
+funshell port "${port}" --kill
+rm -f "${pid_file}"
+```
+
+Prefer this over reading the PID file and sending `TERM` by hand — `funshell port <port> --kill` is the standardized, vetted termination path this repo family uses, both here and inside a CLI's own `server stop` implementation (see [Service Release Governance](../../service-release-governance/SKILL.md#entrypoint-contract)). Only fall back to `kill -TERM "$(cat "${pid_file}")"`, waiting for exit, and removing the PID file afterward when `funshell` is not available in the target environment.
+
 Under the fallback, whichever style you choose:
 
 - Capture `$!` immediately and write it to the PID file atomically.
@@ -212,10 +227,10 @@ Under the fallback, whichever style you choose:
 - Does `start` call `<cli> server start` and let the CLI itself detach and own its PID file, rather than the script wrapping it in `nohup`?
 - Does `run` call `<cli> server run` (not `server start`) via `exec`, staying attached to the terminal?
 - Does `status` call `<cli> server status`, which reads the same PID file `start`/`run` wrote, and report the installed package's version alongside PID/port?
-- Does `stop` call `<cli> server stop`, trusting the CLI to target its own PID file rather than the script guessing a path?
-- Under the non-daemonizing-CLI fallback only: does `stop` target the PID file written by the chosen background start path, send `TERM`, wait for exit, and avoid deleting state while the process is still live? Can a stale or reused PID cause the script to signal an unrelated process?
+- Does `stop` call `<cli> server stop`, trusting the CLI to terminate itself (ideally via `funshell port <port> --kill` internally, per `service-release-governance`) rather than the script guessing a path or PID?
+- Under the non-daemonizing-CLI fallback only: does `stop` terminate via `funshell port <port> --kill` against the port `start` bound to (falling back to the PID file's PID plus `TERM` and a bounded wait only when `funshell` is unavailable), and avoid deleting state while the process is still live? If falling back to PID signaling, can a stale or reused PID cause the script to signal an unrelated process?
 - Does `start`/`run` avoid reload, watch, and development-only flags regardless of which package is installed?
-- Does `start`/`run` resolve only the currently installed package — a fresh local build after `install`, or the pinned registry install — never the source checkout or a stale build output?
+- Does `start`/`run` resolve only the currently installed package — a fresh local build after `install-dev`, or the pinned registry install after `install-prod`/`upgrade`/`rollback` — never the source checkout or a stale build output?
 - Does the script correctly avoid taking a `dev`/`prod` argument on `start`/`stop`/`restart`/`run`/`status`?
 - Does `uninstall`, if the script owns it, stop the service before removing the package?
 - Does the script rely on the repository root or activated environment in a way that must be made explicit?

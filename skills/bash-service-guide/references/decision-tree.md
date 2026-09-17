@@ -71,7 +71,7 @@ Do not open Gum menus when CLI args already specify a valid action and service.
 - Validate action
 - Validate or resolve service when the command targets one service
 - If `all` is supported, resolve it as a separate dispatch path rather than pretending it is a normal service script
-- No environment resolution step: `install` and `publish`, if the script owns them, are inherently dev-only/prod-only by name; every other action acts on whatever is currently installed
+- No environment resolution step: `install-dev`, `install-prod`, and `publish`, if the script owns them, are inherently dev-only/prod-only by name (`install-prod` optionally takes a version instead of an environment argument); every other action acts on whatever is currently installed
 - Reject extra args and invalid supplied values; never turn them into interactive prompts
 - Call `do_<action>` directly in single-service scripts, or call a per-service script from `setup.sh` in multi-service layouts
 

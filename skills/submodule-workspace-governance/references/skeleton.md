@@ -83,11 +83,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-readonly -a ACTIONS=(start stop restart run status install publish build)
+readonly -a ACTIONS=(start stop restart run status install-dev install-prod upgrade rollback publish build)
 readonly -a TARGETS=(api web all)
 
 usage() {
-  printf 'Usage: %s <start|stop|restart|run|status|install|publish> <api|web|all>\n' "${0##*/}" >&2
+  printf 'Usage: %s <start|stop|restart|run|status|install-dev|publish> <api|web|all>\n' "${0##*/}" >&2
+  printf '       %s <install-prod|upgrade> <api|web|all> [version]\n' "${0##*/}" >&2
+  printf '       %s rollback <api|web|all> <version>\n' "${0##*/}" >&2
   printf '       %s build <api|web|all|apps/<name>>\n' "${0##*/}" >&2
 }
 
@@ -137,7 +139,7 @@ all_app_paths() {
 }
 
 dispatch_service() {
-  local action="$1" target="$2" app path
+  local action="$1" target="$2" version="${3:-}" app path
   local -a apps
   if [[ "${target}" == "all" ]]; then
     apps=(api web)
@@ -147,7 +149,7 @@ dispatch_service() {
   for app in "${apps[@]}"; do
     path="$(resolve_cli_app "${app}")" || die "not a CLI-bearing app: ${app}"
     printf '== %s: %s ==\n' "${app}" "${action}"
-    (cd "${path}" && ./scripts/setup.sh "${action}")
+    (cd "${path}" && ./scripts/setup.sh "${action}" ${version:+"${version}"})
   done
 }
 
@@ -170,6 +172,7 @@ dispatch_build() {
 main() {
   local action="${1:-}"
   local target="${2:-}"
+  local version="${3:-}"
 
   [[ -n "${action}" ]] || action="$(choose "${ACTIONS[@]}")"
   contains "${action}" "${ACTIONS[@]}" || {
@@ -181,12 +184,20 @@ main() {
 
   case "${action}" in
     build) dispatch_build "${target}" ;;
+    rollback)
+      [[ -n "${version}" ]] || die "rollback requires an explicit version: ${0##*/} rollback <api|web|all> <version>"
+      contains "${target}" "${TARGETS[@]}" || {
+        usage
+        die "unknown target: ${target}"
+      }
+      dispatch_service "${action}" "${target}" "${version}"
+      ;;
     *)
       contains "${target}" "${TARGETS[@]}" || {
         usage
         die "unknown target: ${target}"
       }
-      dispatch_service "${action}" "${target}"
+      dispatch_service "${action}" "${target}" "${version}"
       ;;
   esac
 }
@@ -194,7 +205,7 @@ main() {
 main "$@"
 ```
 
-Service actions delegate straight into the target app's own `scripts/setup.sh` (its `bash-service-guide`-compliant dispatcher) instead of reimplementing PID/port handling here. `build` runs directly against each resolved app path and always finishes with a single `funbuild push`, matching `scripts/build.sh`'s discipline above. Only `main`'s two `choose()` calls are interactive — every other function still requires its arguments explicitly, so a fully-specified invocation (`scripts/setup.sh start api`) never touches `gum` and works the same in CI or a script.
+Service actions delegate straight into the target app's own `scripts/setup.sh` (its `bash-service-guide`-compliant dispatcher) instead of reimplementing PID/port handling here. `dispatch_service` forwards an optional trailing `version` argument unchanged so `install-prod [version]`/`upgrade [version]`/`rollback <version>` reach the per-app script exactly as documented in [Bash Service Guide](../../bash-service-guide/SKILL.md); `rollback` fails loudly here if no version was supplied instead of falling through to a `gum choose` menu, since there is no interactive default for it. `build` runs directly against each resolved app path and always finishes with a single `funbuild push`, matching `scripts/build.sh`'s discipline above. Only `main`'s two `choose()` calls are interactive — every other function still requires its arguments explicitly, so a fully-specified invocation (`scripts/setup.sh start api`) never touches `gum` and works the same in CI or a script.
 
 ## scripts/all.sh (optional)
 
@@ -297,6 +308,6 @@ git submodule add https://github.com/<org>/<product>-aliyun.git apps/<product>-a
 ```
 
 - They are automatically included by `scripts/setup.sh build all` (or `scripts/build.sh`, if it iterates every submodule) since `all_app_paths()` reads every entry from `.gitmodules` — no separate wiring needed for the build path.
-- Never add them as a `<target>` alias for service actions (`start`/`stop`/`restart`/`run`/`status`/`install`/`publish`) in `scripts/setup.sh` — `resolve_cli_app` should only ever map `api`/`web`, so passing one of these apps to a service action fails loudly instead of silently no-op'ing.
+- Never add them as a `<target>` alias for service actions (`start`/`stop`/`restart`/`run`/`status`/`install-dev`/`install-prod`/`upgrade`/`rollback`/`publish`) in `scripts/setup.sh` — `resolve_cli_app` should only ever map `api`/`web`, so passing one of these apps to a service action fails loudly instead of silently no-op'ing.
 - Add both to the README's app table like any other submodule; just note in the one-line purpose that it's a library/plugin, not a service (e.g. "Core domain library, consumed by `<product>-api`").
 - Do not scaffold a per-app `scripts/setup.sh`-style start/stop CLI for these apps, and do not hold them to the Entrypoint Contract in review — see [references/rules.md](rules.md)'s CLI Entrypoint Requirement section.

@@ -29,23 +29,26 @@ Read this file when you need the full invariant set or want to review an existin
 
 ### Command Semantics
 
-None of `start`, `stop`, `restart`, `run`, or `status` take a `dev`/`prod` argument. They act on whichever package is currently installed on the host — a host only ever has one active install, and whoever installed it already knows whether it came from a local build or the registry. Only `install` and `publish` are inherently environment-specific, and neither needs an explicit argument because the action name already says which one it is.
+None of `start`, `stop`, `restart`, `run`, or `status` take a `dev`/`prod` argument. They act on whichever package is currently installed on the host — a host only ever has one active install, and whoever installed it already knows whether it came from a local build or the registry. `install-dev`, `install-prod`, and `publish` are inherently environment-specific by name, so none of them need a separate argument either. `upgrade [version]`/`rollback <version>` operate on whatever is already installed regardless of which mode put it there, though in practice they only matter on a prod host — a dev host just reruns `install-dev`.
 
 `start`/`run`/`stop`/`status` are thin delegations to the installed CLI's own `server` subcommands, not something the Bash script re-implements:
 
 - `start`: call `<cli> server start [--config <path>]` directly. The CLI itself backgrounds/detaches and writes its own `<cli-name>.pid` next to its resolved config path — the script does not `nohup` this call or keep a separate PID file for services built to this contract.
 - `run`: call `exec <cli> server run [--config <path>]` — the CLI's foreground counterpart of `start` (identical startup and PID file, but stays attached to the terminal instead of detaching); `exec` so signals and exit status propagate.
-- `stop`: call `<cli> server stop`. The CLI reads its own PID file (next to its resolved config path) and stops that process.
+- `stop`: call `<cli> server stop`. Per `service-release-governance`'s Entrypoint Contract, the CLI should terminate via `funshell port <port> --kill` internally rather than hand-signaling the PID read from its own PID file — the Bash script itself doesn't need to know that detail, it just delegates.
 - `restart`: implement as `stop` + `start` (i.e. `do_stop` then `do_start`).
 - `status`: call `<cli> server status`. Report the service's state without prompting, including the installed package's version (e.g. via `pip show`/`npm ls -g`/the CLI's own `--version`) alongside PID/port.
 - `publish`: build and upload a new formal package; prod-only, always the release flavor. Call `funbuild build` (alias `funbuild release`) when the project uses this convention — it already covers version bump, build, publish, push, and tag for npm, Python, and hybrid repos.
-- `install`: dev-only, always the local-build flavor — clear the previous local build/install, rebuild from the current working tree, and install the built package locally (`funbuild install` when available). There is no `prod` counterpart in the lifecycle script: a prod host installs the exact formal version directly via the ecosystem's package manager or the installed CLI's own `upgrade`/`rollback` subcommand, per `service-release-governance`, not through this script.
-- `upgrade`/`rollback <version>`/`uninstall`: primarily the installed CLI's own top-level subcommands (`<cli> upgrade`, `<cli> rollback <version>`, `<cli> uninstall`), not something to hand-roll in Bash. Add a passthrough in the lifecycle script only when it genuinely needs one consistent entrypoint for all of these. `uninstall` must stop the running service first, then remove the package — never remove it out from under a live process. There is no separate `install`-for-rollback path; rolling back means `rollback <version>`.
+- `install-dev`: dev-only, always the local-build flavor — clear the previous local build/install, rebuild from the current working tree, and install the built package locally (`funbuild install` when available). Equivalent to `pip install .`/a fresh local wheel install.
+- `install-prod [version]`: prod-only, the bootstrap flavor for a host that doesn't have the package yet — the CLI cannot install itself before it exists (per `service-release-governance`), so this always goes straight through the ecosystem's package manager: `pip install <pkg>[==<version>]`, `npm install -g <pkg>[@<version>]`, or an equivalent registry-install command. Without a version this behaves like a bare `pip install <pkg>`: a no-op if any version is already present, never silently upgrading — that's what `upgrade` is for. With a version it pins to exactly that version regardless of what's currently installed, the same underlying step `rollback` reuses.
+- `upgrade [version]`: move the already-installed package to the latest version, or an explicit one. Delegate to the installed CLI's own `<cli> upgrade [version]` subcommand when it implements one (per `service-release-governance`'s Entrypoint Contract); otherwise call the ecosystem's package manager directly (`pip install <pkg> -U` / `pip install <pkg>==<version>`, `npm install -g <pkg>@latest` / `@<version>`). Assumes a package is already installed — this is not the bootstrap path, `install-prod` is.
+- `rollback <version>`: move the already-installed package to an explicit older (or otherwise different) version. `<version>` is mandatory — there is no "latest" concept for rollback, and it never inherits `install-prod`'s no-op-if-already-installed behavior; it always forces the target version. Delegate to `<cli> rollback <version>` when the CLI implements it, otherwise reinstall that exact version directly through the ecosystem's package manager.
+- `uninstall`: primarily the installed CLI's own top-level subcommand (`<cli> uninstall`), not something to hand-roll in Bash. Add a passthrough in the lifecycle script only when it genuinely needs one consistent entrypoint. It must stop the running service first, then remove the package — never remove it out from under a live process.
 - `all`: optional aggregate target, not a required baseline feature.
 
-A CLI that cannot daemonize itself is the exception, not the baseline: only then does the Bash script fall back to `nohup`-backgrounding `server start` in the foreground and managing its own `.run/<service>.pid` file, per the fallback pattern in [runtime-patterns.md](runtime-patterns.md#backgrounding-pattern).
+A CLI that cannot daemonize itself is the exception, not the baseline: only then does the Bash script fall back to `nohup`-backgrounding `server start` in the foreground, managing its own `.run/<service>.pid` file for start/status/liveness, and stopping via `funshell port <port> --kill` instead of hand-signaling that PID, per the fallback pattern in [runtime-patterns.md](runtime-patterns.md#backgrounding-pattern).
 
-Keep `publish`, `install`, and any `upgrade`/`rollback`/`uninstall` passthrough separate from `start`/`run`; a start must not silently build, publish, install, or change the installed version. Expose these only when the Bash lifecycle script actually owns that operation. Otherwise leave them to the installed CLI and release automation, and treat the installed package as a prerequisite for `start`/`run`.
+Keep `publish`, `install-dev`, `install-prod`, `upgrade`, `rollback`, and `uninstall` separate from `start`/`run`; a start must not silently build, publish, install, or change the installed version. Expose each of these only when the Bash lifecycle script actually owns that operation. Otherwise leave them to the installed CLI and release automation, and treat the installed package as a prerequisite for `start`/`run`.
 
 Do not expose commands that the service does not actually support. Apply [Service Release Governance](../../service-release-governance/SKILL.md) to every production publish, install, and start path.
 
@@ -75,9 +78,9 @@ Once the installed CLI backgrounds itself and owns its own PID file (see [Runtim
 - Before `start`/`run`, reject a live PID file and remove or report a stale one explicitly.
 - After backgrounding, write the captured PID atomically and verify that it survives a short startup grace period.
 - Redirect stdin, stdout, and stderr for background starts so the process is detached from the terminal.
-- Before `stop`, require a numeric PID, check that it is live, and verify service identity when a reliable command or metadata check is available.
-- Send `TERM`, wait for a bounded interval, and remove the PID file only after the process exits. Use `KILL` only when policy explicitly permits forced shutdown.
-- Never discover a process by port and then kill it. A listener can belong to an unrelated process.
+- Before `stop`, prefer `funshell port <port> --kill` against the port `start` bound to — it is the standardized, vetted way this repo family terminates whatever is bound to a service's port. Both a CLI's own `server stop` implementation (see [Service Release Governance](../../service-release-governance/SKILL.md#entrypoint-contract)) and the non-daemonizing-CLI fallback below should use it as the primary termination step.
+- Only fall back to PID-based signaling when `funshell` is unavailable in the target environment: require a numeric PID, check that it is live, verify service identity when a reliable command or metadata check is available, send `TERM`, wait for a bounded interval, remove the PID file only after the process exits, and use `KILL` only when policy explicitly permits forced shutdown.
+- Never hand-roll a different port-based discovery-then-kill (e.g. `lsof`/`fuser` piped into a raw `kill`) — a listener found that way can belong to an unrelated process. `funshell port <port> --kill` is the one vetted exception to that caution, not a license to reinvent the same idea by hand.
 
 Under the non-daemonizing-CLI fallback, the Bash script must uphold all of the above itself, plus serialize lifecycle changes with a service-scoped lock when concurrent invocations are realistic.
 
@@ -89,7 +92,7 @@ Under the non-daemonizing-CLI fallback, the Bash script must uphold all of the a
 
 ### Environment Identity
 
-- Do not add a `dev`/`prod` argument to `start`, `stop`, `restart`, `run`, or `status`. Environment identity lives entirely in what got installed (`install` vs. a registry install/`upgrade`/`rollback`), never in a runtime argument.
+- Do not add a `dev`/`prod` argument to `start`, `stop`, `restart`, `run`, or `status`. Environment identity lives entirely in what got installed (`install-dev` vs. `install-prod`/`upgrade`/`rollback`), never in a runtime argument.
 - Preserve the order: action first, service second when needed. No environment step follows.
 - Support direct CLI usage without prompting when action and service are already present.
 - Reject invalid and extra args instead of silently discarding them or replacing them with a prompt.
@@ -126,7 +129,7 @@ WEB_PORT=4173
 ### Start Rules
 
 - `start` uses `<installed-cli> server start [--config <path>] [--port ...]`; `run` uses the CLI's foreground counterpart, `exec <installed-cli> server run [--config <path>] [--port ...]`. Both write the CLI's own `<cli-name>.pid` next to whichever config path got resolved, so the script does not manage a separate PID file. Whether the underlying package came from a local build or the registry-pinned version is decided entirely at install time, not by an argument to `start`/`run`.
-- `--config` is optional. When passed, it typically points `install`-time dev usage at a repo-tracked file such as `config/dev.toml`; when omitted, the CLI resolves its own hardcoded default (`${XDG_CONFIG_HOME:-~/.config}/<org>/<cli-name>/config.toml`), which is normally sufficient for a prod host. The PID file follows whichever path is actually in effect.
+- `--config` is optional. When passed, it typically points `install-dev`-time dev usage at a repo-tracked file such as `config/dev.toml`; when omitted, the CLI resolves its own hardcoded default (`${XDG_CONFIG_HOME:-~/.config}/<org>/<cli-name>/config.toml`), which is normally sufficient for a prod host. The PID file follows whichever path is actually in effect.
 - Ad hoc hot-reload tooling (`npm run dev`, `vite dev`, `next dev`, `uv run --reload`) is fine as an unmanaged workflow while actively editing code, but is never what the lifecycle script's `start`/`run` itself invokes — that action must go through the CLI, backed by a package actually installed from the current source.
 - For Python services, run the installed CLI entrypoint (`<cli> server start`), never a raw module path, script, editable install, `PYTHONPATH` override, or an implicit `uv run` workspace resolution.
 - For frontend services, run the installed CLI/production server from the exact installed package, not the checkout's `dist/`/`build/` directory run directly.
@@ -147,7 +150,7 @@ WEB_PORT=4173
 - Are status and health checks derived from the same service-specific port configuration?
 - Are duplicate starts, stale PID files, failed starts, and graceful stop timeouts handled explicitly (by the CLI itself, or by the script only under the fallback pattern)?
 - Does `stop` avoid signaling a PID based only on a port match?
-- Does `start`/`run` use the exact package actually installed on the host — a local build after `install`, or the formal package installed from the intended repository — for each affected service?
+- Does `start`/`run` use the exact package actually installed on the host — a local build after `install-dev`, or the formal package installed via `install-prod`/`upgrade`/`rollback` from the intended repository — for each affected service?
 - Does `status` report the installed package's version, not just PID/port?
 - Does `uninstall` stop the running service first and only then remove the package?
 - Are unsupported commands hidden or rejected clearly?
@@ -168,7 +171,7 @@ WEB_PORT=4173
 - Leaving ports scattered across functions.
 - Pointing a running service at a locally built package when the host is meant to run the registry-installed formal version, or vice versa.
 - Writing logs without service-specific naming where collisions across services are possible.
-- Hand-rolling `upgrade`/`rollback`/`uninstall` in Bash instead of delegating to the installed CLI's own subcommands.
+- Hand-rolling `upgrade`/`rollback`/`uninstall` in Bash when the installed CLI already provides its own subcommands for them, instead of delegating.
 - Removing an installed package in `uninstall` without stopping the running service first.
 - Shipping placeholder lifecycle commands that do nothing.
 - Re-implementing `nohup`/PID-file management in Bash for a CLI that already daemonizes itself and owns its own PID file.

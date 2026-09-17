@@ -20,7 +20,7 @@
 ## 项目目标
 
 - 约束服务通过正式包发布、仓库安装和生产启动，禁止生产直接运行开发源码。
-- 统一 Bash 服务生命周期脚本的行为边界（`start`/`run`、`install`/`publish`）。
+- 统一 Bash 服务生命周期脚本的行为边界（`start`/`run`、`install-dev`/`install-prod`/`upgrade`/`rollback`/`publish`）。
 - 规范以 `apps/` 下 Git 子模块聚合多个独立仓库应用的 `<product>-dev` 编排仓库的搭建与审计。
 
 ## 项目范围
