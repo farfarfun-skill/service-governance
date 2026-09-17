@@ -16,14 +16,28 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 - Backend/server repo: `<product>-api` — a thin service that depends on `<product>` (and any plugin repos) and exposes it to `<product>-web`. Prefer `-api` over `-server`/`-backend`/`-svc`: once the service is running it genuinely serves an API to other consumers, not just the paired frontend, so the name describes what it does rather than just "a process exists."
 - Frontend repo: `<product>-web`.
 - Plugin/driver/SDK repo: `<product>-<capability>` (e.g. `<product>-aliyun`, `<product>-oss`) — a focused integration consumed by `<product>` or `<product>-api`, or published standalone for third parties. Never reuse this pattern for another frontend or backend pairing — those always stay `-web` / `-api`.
+- Nested workspace app: `<something>-dev` under `apps/` — an app that is itself another `<product>-dev` submodule workspace, recursively governed by this same skill. This is the one suffix that is also a reliable structural signal (it has its own `apps/` + `scripts/setup.sh`), unlike the service/package split below.
 - Submodule path under `apps/` matches the repo name exactly — never rename the path to something shorter or different from the remote repo it tracks.
+- `-api`/`-web`/`-<capability>` are naming conventions for the common case, not the classification mechanism — see App Category & Lifecycle Requirement below for why the suffix alone never decides whether an app needs the CLI Entrypoint Contract.
 
-## CLI Entrypoint Requirement
+## App Category & Lifecycle Requirement
 
-- Only the `-web` (frontend) and `-api` (backend/server) apps must satisfy [Service Release Governance](../../service-release-governance/SKILL.md)'s Entrypoint Contract and, once they have a runnable service, [Bash Service Guide](../../bash-service-guide/SKILL.md)'s `scripts/setup.sh` pattern.
-- The core library repo (`<product>`) and plugin/driver repos (`<product>-<capability>`) are exempt — they ship as installable packages consumed by `<product>-api` or third parties, not as long-running services. Forcing a `server start` CLI onto a repo nobody starts as a process just adds unused surface.
-- Test to apply per app: "does something start this as a long-running process it then talks to?" Yes → Entrypoint Contract required. Only ever imported or `pip install`/`npm install`ed as a dependency → exempt.
-- Example: a `fundrive-dev` workspace with `apps/fundrive` (core library), `apps/fundrive-api` (backend), `apps/fundrive-web` (frontend), `apps/fundrive-aliyun` (storage-driver plugin) only holds `fundrive-api` and `fundrive-web` to the CLI requirement; `fundrive` and `fundrive-aliyun` are installed, not started.
+Every app under `apps/` falls into exactly one of three categories. The category — never the repo's name suffix — decides which `scripts/setup.sh` actions it must support and how the dev repo's own `scripts/setup.sh` dispatches to it.
+
+- **Service app** — something starts it as a long-running process and talks to it (HTTP, a socket, a queue, ...). Must satisfy [Service Release Governance](../../service-release-governance/SKILL.md)'s Entrypoint Contract and [Bash Service Guide](../../bash-service-guide/SKILL.md)'s `scripts/setup.sh` pattern in full: both service actions (`start`/`stop`/`restart`/`run`/`status`) and release actions (`install-dev`/`install-prod`/`upgrade`/`rollback`/`publish`). `-api` and `-web` are the conventional names for the two most common service apps, but any app that passes the test below is a service app regardless of name — a queue worker or scheduler counts just as much.
+- **Package app** — only ever imported or `pip install`/`npm install`ed as a dependency; nothing starts it as its own process. Still must satisfy service-release-governance's release actions (`install-dev`/`install-prod`/`upgrade`/`rollback`/`publish`) plus `build`, since it's still a versioned artifact someone installs — it just has no `server` subcommands and no service actions. The core library (`<product>`) and plugin/driver repos (`<product>-<capability>`) are the conventional examples.
+- **Nested workspace app** — an `apps/<name>` submodule that is itself a `<something>-dev` submodule workspace, recursively governed by this same skill. Out of scope for this dev repo's own action dispatch: don't wire it into `resolve_service_app`/`resolve_release_app`, and don't hold it to either action group here. Bump its submodule pointer like any other app; to act on what's inside it, `cd` into it and run its own `scripts/setup.sh` directly — it owns and dispatches its own three-way classification independently.
+
+Test to apply per app (service vs. package — a nested workspace app is identified structurally, by containing its own `apps/`+`scripts/setup.sh`, not by this test): "does something start this as a long-running process it then talks to?" Yes → service app. Only ever installed as a dependency → package app.
+
+Do not infer the category from the repo's name suffix. `-api`/`-web` are conventions, not proof: a `-web` app that ships as static files with no local server process, or a `-api` deployed as a set of serverless functions with nothing to `start`/`stop` locally, is a package app despite the name; conversely a differently-named app (`-worker`, `-consumer`, `-scheduler`) is a service app the moment something runs it as a process. Settle the classification explicitly in two places that must agree, not by guessing from the string:
+
+1. Code: whether `scripts/setup.sh` wires the app's alias into `resolve_service_app()` (service) or only into `resolve_release_app()`/`all_app_paths()` (package) — see [references/skeleton.md](references/skeleton.md).
+2. Docs: the app's row in the dev repo README's app table states its category outright ("service" / "package" / "nested workspace"), not just a free-text description.
+
+A review that finds the code and the README disagreeing on an app's category is a defect, not a matter of judgment.
+
+Example: a `fundrive-dev` workspace with `apps/fundrive` (core library, package), `apps/fundrive-api` (backend, service), `apps/fundrive-web` (frontend, service), `apps/fundrive-aliyun` (storage-driver plugin, package) — plus, if the product later grows a background indexer, `apps/fundrive-indexer` (service, despite not being named `-api`/`-web`) — holds `fundrive-api`, `fundrive-web`, and `fundrive-indexer` to the full service+release action set; `fundrive` and `fundrive-aliyun` get release actions and `build` only.
 
 ## Web App Proxy Requirement
 
@@ -41,10 +55,13 @@ Expanded invariants and a review checklist for `<product>-dev` submodule workspa
 - `scripts/build.sh` builds every app before running `funbuild push` once at the end — do not push after each individual app, since that produces a dev-repo commit per app instead of one atomic "these versions ship together" commit.
 - Keep `scripts/all.sh` out of the workspace until there's a concrete recurring need for a plain non-service batch loop; an unused `all` action is dead code that will drift from what the apps actually support the moment one app's interface changes.
 - `scripts/setup.sh` is required and takes `<action> <target>`, mirroring `bash-service-guide`'s own `action -> service` resolution one level up:
-  - `<target>` is a short alias (`api`, `web`, ...) resolved to `apps/<product>-api` / `apps/<product>-web` in one place, or `all`.
-  - For service actions (`start`, `stop`, `restart`, `run`, `status`, `install-dev`, `install-prod`, `upgrade`, `rollback`, `publish`), `all` expands to CLI-bearing apps only (`api` + `web`) and each call delegates to that app's own `scripts/setup.sh <action>` — never reimplement PID/port/process handling at the dev-repo level.
-  - For `build`, `all` expands to every submodule under `apps/`, CLI-bearing or not, since core-library and plugin apps still need `funbuild build`/`funbuild install` to be published even though nothing starts them as a process. Run `funbuild push` once at the end regardless of scope.
-  - A service action against a target that resolves to a non-CLI app (core library or plugin) is a usage error, not a silent no-op — fail loudly with a clear message.
+  - `<target>` is a short alias resolved to an `apps/<name>` path in one place, or `all`. The alias name is a convention (`api`, `web`, ...), not the classification mechanism — see App Category & Lifecycle Requirement above.
+  - Actions split into three groups, each scoped to `all` by app category rather than by name:
+    - **Service actions** (`start`, `stop`, `restart`, `run`, `status`): `all` expands to service apps only. Delegate each call to that app's own `scripts/setup.sh <action>` — never reimplement PID/port/process handling at the dev-repo level.
+    - **Release actions** (`install-dev`, `install-prod`, `upgrade`, `rollback`, `publish`): `all` expands to every service app and every package app — a core-library or plugin app still needs these even though it has no service actions.
+    - **`build`**: same scope as release actions — every service app and every package app. Run `funbuild push` once at the end regardless of scope.
+  - All three groups exclude nested-workspace apps; those get their pointer bumped like any other submodule but are never dispatched into by this script.
+  - An action against a target outside its group's scope (a service action against a package or nested-workspace app) is a usage error, not a silent no-op — fail loudly with a clear message.
 - Any script that touches more than one app must state the order apps are processed in and what happens on partial failure (stop at first failure, matching `set -e`, unless the workspace has an explicit reason to continue).
 
 ## Submodule Pointer Discipline
@@ -64,8 +81,8 @@ When reviewing a change to a `<product>-dev` repo, confirm:
 - [ ] `scripts/build.sh` (if touched) still switches each app to its tracked branch before building, and still runs `funbuild push` exactly once at the end.
 - [ ] Every submodule pointer change has a corresponding already-pushed commit in that app's own repo.
 - [ ] The README's app table still matches `.gitmodules` exactly (same set of apps, same paths).
-- [ ] `scripts/setup.sh` exists (required, not optional) and resolves `all` differently per action group (CLI apps only for service actions, every app under `apps/` for `build`), rejecting service actions against non-CLI targets instead of silently skipping them.
+- [ ] `scripts/setup.sh` exists (required, not optional) and resolves `all` per the three-way split (service apps only for service actions; service + package apps for release actions and `build`; nested-workspace apps excluded from all three), rejecting an action against a target outside its group instead of silently skipping it.
 - [ ] `all.sh`, if present, is still exercised by an actual documented use case — remove it if it's gone stale.
-- [ ] The CLI/service Entrypoint Contract was applied to the `-web`/`-api` apps only — not skipped for either of them, and not forced onto a core-library or plugin app that nothing starts as a process.
+- [ ] Every app's category (service / package / nested workspace) was decided by the test in App Category & Lifecycle Requirement, never inferred from its name suffix — and the code (`resolve_service_app`/`resolve_release_app`) and the README app table agree on that category for every app.
 - [ ] `-web`'s own server reverse-proxies backend-facing paths to `-api` (not just serving static assets), the backend URL resolution follows the same flag/config/env precedence as the rest of the Entrypoint Contract, and dev tooling proxies the same target — CORS was not added to `-api` as a substitute.
 - [ ] `docs/` exists, follows the document-bundle-standard layout, and no `apps/<name>` repo has grown a parallel `docs/` bundle of its own (unless it's a nested `-dev` workspace or a dedicated `<product>-doc` repo).
