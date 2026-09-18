@@ -16,6 +16,7 @@ Starter layout for a `<product>-dev` orchestration repo with two apps (backend `
     ├── init.sh
     ├── build.sh
     ├── setup.sh             # required, alongside init.sh/build.sh
+    ├── funbuild.toml        # required; shared version for every app under apps/
     └── all.sh                # optional, add only when needed
 ```
 
@@ -51,28 +52,22 @@ git submodule update
 
 ```sh
 #!/bin/sh
-set -e
-
-git -C apps/<product>-api switch master
-git -C apps/<product>-web switch master
-
-cd apps/<product>-api
-funbuild build
-
-cd ../..
-cd apps/<product>-web
-funbuild build
-
-cd ../..
-
-funbuild push
+exec funbuild build
 ```
 
-`funbuild push` runs at the dev-repo level after both apps build, so the resulting submodule pointer bump is committed and pushed as part of the same operation. See [Service Release Governance](../../service-release-governance/SKILL.md) for what `funbuild build`/`funbuild install` do per ecosystem.
+`funbuild build`, run at the dev-repo root, recognizes this layout (an `apps/` directory plus `scripts/funbuild.toml`) on its own: it bumps the shared version in `scripts/funbuild.toml`, builds/publishes every non-nested-workspace app under `apps/` with that same version, then commits/pushes/tags the dev repo once so the submodule pointer bumps land together. `build.sh` does not need to loop over apps itself. See [Service Release Governance](../../service-release-governance/SKILL.md) for what `funbuild build` does per ecosystem inside each app.
+
+## scripts/funbuild.toml (required)
+
+```toml
+version = "1.0.0"
+```
+
+`funbuild build` reads and increments `version` so every app under `apps/` publishes under the same shared version number, instead of each app tracking its own. Commit the file; `funbuild` rewrites it in place as part of each build.
 
 ## scripts/setup.sh (required, alongside init.sh/build.sh)
 
-Usage: `scripts/setup.sh <action> <target>`, where `<target>` is `api`, `web`, or `all`. `all` means something different per action group — service apps only for service actions, service + package apps for release actions and `build`, and nested-workspace apps excluded from every group. Every `<product>-dev` repo ships this from the start; even a workspace of package apps only still needs `setup.sh build all` to build/publish them (service actions simply have no alias to resolve until a service app is added).
+Usage: `scripts/setup.sh <action> <target>`, where `<target>` is `api`, `web`, or `all`. `all` means something different per action group — service apps only for service actions, service + package apps for release actions, and nested-workspace apps excluded from both groups. Build and publish are not actions this script handles at all — `funbuild build`, run from the dev repo root, owns both across every app under `apps/` on its own (see `scripts/funbuild.toml` above). Every `<product>-dev` repo ships `setup.sh` from the start; even a workspace of package apps only still needs it for release actions (service actions simply have no alias to resolve until a service app is added).
 
 A missing `<action>` or `<target>` falls back to a `gum choose` menu instead of erroring immediately — reuse `bash-service-guide`'s own `choose()` helper (see its [skeleton.md](../../bash-service-guide/references/skeleton.md)) rather than inventing a second interactive style at the dev-repo level. This needs Bash (`[[ ]]`, arrays), not POSIX `sh`, unlike the other cross-repo scripts.
 
@@ -84,15 +79,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 readonly -a SERVICE_ACTIONS=(start stop restart run status)
-readonly -a RELEASE_ACTIONS=(install-dev install-prod upgrade rollback publish)
-readonly -a ACTIONS=("${SERVICE_ACTIONS[@]}" "${RELEASE_ACTIONS[@]}" build)
+readonly -a RELEASE_ACTIONS=(install-dev install-prod upgrade rollback)
+readonly -a ACTIONS=("${SERVICE_ACTIONS[@]}" "${RELEASE_ACTIONS[@]}")
 readonly -a TARGETS=(api web all)
 
 usage() {
-  printf 'Usage: %s <start|stop|restart|run|status|install-dev|publish> <api|web|all>\n' "${0##*/}" >&2
+  printf 'Usage: %s <start|stop|restart|run|status|install-dev> <api|web|all>\n' "${0##*/}" >&2
   printf '       %s <install-prod|upgrade> <api|web|all> [version]\n' "${0##*/}" >&2
   printf '       %s rollback <api|web|all> <version>\n' "${0##*/}" >&2
-  printf '       %s build <api|web|all|apps/<name>>\n' "${0##*/}" >&2
 }
 
 die() {
@@ -138,37 +132,12 @@ resolve_package_app() {
   esac
 }
 
-# Release actions (install-dev/install-prod/upgrade/rollback/publish) and
-# build apply to service apps and package apps alike.
+# Release actions (install-dev/install-prod/upgrade/rollback) apply to
+# service apps and package apps alike. Nested-workspace apps resolve through
+# neither this nor resolve_service_app — dispatching into one is its own
+# scripts/setup.sh's job, not this one's.
 resolve_release_app() {
   resolve_service_app "$1" 2>/dev/null || resolve_package_app "$1" 2>/dev/null
-}
-
-# build's target additionally accepts an explicit "apps/<name>" path.
-resolve_build_path() {
-  case "$1" in
-    apps/*) printf '%s\n' "$1" ;;
-    *) resolve_release_app "$1" 2>/dev/null || printf 'apps/%s\n' "$1" ;;
-  esac
-}
-
-# Nested-workspace apps: apps/<name> that is itself a <something>-dev
-# workspace, recursively governed by this same skill. List their submodule
-# paths here so release actions and build skip them — dispatching into a
-# nested workspace's own scripts/setup.sh is that workspace's own job, not
-# this one's. Empty in this two-app starter.
-readonly -a NESTED_WORKSPACE_APPS=()
-
-# Every submodule under apps/ that isn't a nested workspace (service and
-# package apps together).
-all_app_paths() {
-  local path
-  git submodule status | awk '{print $2}' | while IFS= read -r path; do
-    if (( ${#NESTED_WORKSPACE_APPS[@]} > 0 )) && contains "${path}" "${NESTED_WORKSPACE_APPS[@]}"; then
-      continue
-    fi
-    printf '%s\n' "${path}"
-  done
 }
 
 is_service_action() {
@@ -199,22 +168,6 @@ dispatch_app_action() {
   done
 }
 
-dispatch_build() {
-  local target="$1" path
-  local -a paths
-  if [[ "${target}" == "all" ]]; then
-    mapfile -t paths < <(all_app_paths)
-  else
-    paths=("$(resolve_build_path "${target}")")
-  fi
-  for path in "${paths[@]}"; do
-    printf '== %s: build ==\n' "${path}"
-    git -C "${path}" switch master
-    (cd "${path}" && funbuild build)
-  done
-  funbuild push
-}
-
 main() {
   local action="${1:-}"
   local target="${2:-}"
@@ -229,7 +182,6 @@ main() {
   [[ -n "${target}" ]] || target="$(choose "${TARGETS[@]}")"
 
   case "${action}" in
-    build) dispatch_build "${target}" ;;
     rollback)
       [[ -n "${version}" ]] || die "rollback requires an explicit version: ${0##*/} rollback <api|web|all> <version>"
       contains "${target}" "${TARGETS[@]}" || {
@@ -251,7 +203,7 @@ main() {
 main "$@"
 ```
 
-Service and release actions both delegate straight into the target app's own `scripts/setup.sh` (its `bash-service-guide`-compliant dispatcher) instead of reimplementing PID/port or package-install handling here; `dispatch_app_action` picks `resolve_service_app` or `resolve_release_app` based on which group the action belongs to, so a service action against a package app (or a nested-workspace app, which resolves through neither) fails loudly instead of silently doing nothing. It forwards an optional trailing `version` argument unchanged so `install-prod [version]`/`upgrade [version]`/`rollback <version>` reach the per-app script exactly as documented in [Bash Service Guide](../../bash-service-guide/SKILL.md); `rollback` fails loudly here if no version was supplied instead of falling through to a `gum choose` menu, since there is no interactive default for it. `build` runs directly against each resolved app path (via `all_app_paths`, which already excludes `NESTED_WORKSPACE_APPS`) and always finishes with a single `funbuild push`, matching `scripts/build.sh`'s discipline above. Only `main`'s two `choose()` calls are interactive — every other function still requires its arguments explicitly, so a fully-specified invocation (`scripts/setup.sh start api`) never touches `gum` and works the same in CI or a script.
+Service and release actions both delegate straight into the target app's own `scripts/setup.sh` (its `bash-service-guide`-compliant dispatcher) instead of reimplementing PID/port or package-install handling here; `dispatch_app_action` picks `resolve_service_app` or `resolve_release_app` based on which group the action belongs to, so a service action against a package app (or a nested-workspace app, which resolves through neither) fails loudly instead of silently doing nothing. It forwards an optional trailing `version` argument unchanged so `install-prod [version]`/`upgrade [version]`/`rollback <version>` reach the per-app script exactly as documented in [Bash Service Guide](../../bash-service-guide/SKILL.md); `rollback` fails loudly here if no version was supplied instead of falling through to a `gum choose` menu, since there is no interactive default for it. Only `main`'s two `choose()` calls are interactive — every other function still requires its arguments explicitly, so a fully-specified invocation (`scripts/setup.sh start api`) never touches `gum` and works the same in CI or a script.
 
 ## scripts/all.sh (optional)
 
@@ -364,7 +316,7 @@ git submodule add https://github.com/<org>/<product>-aliyun.git apps/<product>-a
   }
   ```
   and extend `dispatch_app_action`'s non-service `all` list to match (`apps=(api web core aliyun)`). This registration — not the repo's name — is what makes it a package app; do not skip it and rely on the name suffix alone.
-- They are automatically included by `scripts/setup.sh build all` (or `scripts/build.sh`, if it iterates every submodule) since `all_app_paths()` reads every entry from `.gitmodules` (minus `NESTED_WORKSPACE_APPS`) — no separate wiring needed for the build path.
+- They are automatically built and published by `funbuild build` (`scripts/build.sh`) without any registration here — it walks every non-nested-workspace submodule under `apps/` on its own, so a package app just needs to exist under `apps/` to be included.
 - Never add them to `resolve_service_app` — `resolve_service_app` should only ever map apps something actually starts as a process, so passing a package app to a service action fails loudly instead of silently no-op'ing.
 - Add both to the README's app table like any other submodule with `package` in the 类别/category column; the one-line purpose can still add color (e.g. "Core domain library, consumed by `<product>-api`"), but the category itself must be the explicit label, not just implied by that text.
 - Do not scaffold a per-app `scripts/setup.sh`-style start/stop CLI for these apps, and do not hold them to the service-action part of the Entrypoint Contract in review — see [references/rules.md](rules.md)'s App Category & Lifecycle Requirement section. They still need `install-dev`/`install-prod`/`upgrade`/`rollback`/`publish` support in their own `scripts/setup.sh`, just no `server` subcommands.
@@ -377,7 +329,7 @@ If one of the product's own pieces is itself split into further submodules — a
 git submodule add https://github.com/<org>/<product>-plugins-dev.git apps/<product>-plugins-dev
 ```
 
-- Add its path to `NESTED_WORKSPACE_APPS` so `all_app_paths()` (and therefore `build`/release `all`) skips it — this workspace's own `scripts/build.sh`/`scripts/setup.sh` build/release/serve it recursively, not this one's.
+- `funbuild build` skips it automatically — it detects a nested workspace structurally (an `apps/<name>` that itself has `apps/` + `scripts/setup.sh`) and never dispatches into it; this workspace's own `scripts/build.sh`/`scripts/setup.sh` build/release/serve it recursively, not this one's. No registration needed for the build path.
 - Never register it in `resolve_service_app` or `resolve_package_app` — it isn't a single service or package, it's a whole other workspace with its own three-way classification underneath.
 - To act on what's inside it, `cd apps/<product>-plugins-dev && ./scripts/setup.sh <action> <target>` directly, or add a thin passthrough action in this dev repo's own `scripts/all.sh` if that becomes a frequent need — never teach this dev repo's `setup.sh` to understand a second layer of aliases.
 - Add it to the README's app table with `nested workspace` in the 类别/category column, and link to its own README for what it contains.

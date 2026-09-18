@@ -56,11 +56,10 @@ Example: a `fundrive-dev` workspace with `apps/fundrive` (core library, package)
 - Keep `scripts/all.sh` out of the workspace until there's a concrete recurring need for a plain non-service batch loop; an unused `all` action is dead code that will drift from what the apps actually support the moment one app's interface changes.
 - `scripts/setup.sh` is required and takes `<action> <target>`, mirroring `bash-service-guide`'s own `action -> service` resolution one level up:
   - `<target>` is a short alias resolved to an `apps/<name>` path in one place, or `all`. The alias name is a convention (`api`, `web`, ...), not the classification mechanism — see App Category & Lifecycle Requirement above.
-  - Actions split into three groups, each scoped to `all` by app category rather than by name:
+  - Actions split into two groups, each scoped to `all` by app category rather than by name:
     - **Service actions** (`start`, `stop`, `restart`, `run`, `status`): `all` expands to service apps only. Delegate each call to that app's own `scripts/setup.sh <action>` — never reimplement PID/port/process handling at the dev-repo level.
-    - **Release actions** (`install-dev`, `install-prod`, `upgrade`, `rollback`, `publish`): `all` expands to every service app and every package app — a core-library or plugin app still needs these even though it has no service actions.
-    - **`build`**: same scope as release actions — every service app and every package app. Run `funbuild push` once at the end regardless of scope.
-  - All three groups exclude nested-workspace apps; those get their pointer bumped like any other submodule but are never dispatched into by this script.
+    - **Release actions** (`install-dev`, `install-prod`, `upgrade`, `rollback`): `all` expands to every service app and every package app — a core-library or plugin app still needs these even though it has no service actions. `build` and `publish` are not `setup.sh` actions at all — `funbuild build`, run from the dev repo root, owns both across every app under `apps/` on its own.
+  - Both groups exclude nested-workspace apps; those get their pointer bumped like any other submodule but are never dispatched into by this script.
   - An action against a target outside its group's scope (a service action against a package or nested-workspace app) is a usage error, not a silent no-op — fail loudly with a clear message.
 - Any script that touches more than one app must state the order apps are processed in and what happens on partial failure (stop at first failure, matching `set -e`, unless the workspace has an explicit reason to continue).
 
@@ -81,7 +80,7 @@ When reviewing a change to a `<product>-dev` repo, confirm:
 - [ ] `scripts/build.sh` (if touched) still switches each app to its tracked branch before building, and still runs `funbuild push` exactly once at the end.
 - [ ] Every submodule pointer change has a corresponding already-pushed commit in that app's own repo.
 - [ ] The README's app table still matches `.gitmodules` exactly (same set of apps, same paths).
-- [ ] `scripts/setup.sh` exists (required, not optional) and resolves `all` per the three-way split (service apps only for service actions; service + package apps for release actions and `build`; nested-workspace apps excluded from all three), rejecting an action against a target outside its group instead of silently skipping it.
+- [ ] `scripts/setup.sh` exists (required, not optional) and resolves `all` per the two-way split (service apps only for service actions; service + package apps for release actions; nested-workspace apps excluded from both), rejecting an action against a target outside its group instead of silently skipping it. `build`/`publish` are not `setup.sh` actions — `funbuild build` owns them.
 - [ ] `all.sh`, if present, is still exercised by an actual documented use case — remove it if it's gone stale.
 - [ ] Every app's category (service / package / nested workspace) was decided by the test in App Category & Lifecycle Requirement, never inferred from its name suffix — and the code (`resolve_service_app`/`resolve_release_app`) and the README app table agree on that category for every app.
 - [ ] `-web`'s own server reverse-proxies backend-facing paths to `-api` (not just serving static assets), the backend URL resolution follows the same flag/config/env precedence as the rest of the Entrypoint Contract, and dev tooling proxies the same target — CORS was not added to `-api` as a substitute.
