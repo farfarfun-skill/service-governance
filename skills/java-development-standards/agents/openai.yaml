@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java Development Standards"
+  short_description: "Consistent, maintainable Java implementation and review"
+  default_prompt: "Use $java-development-standards to implement or review this Java change."

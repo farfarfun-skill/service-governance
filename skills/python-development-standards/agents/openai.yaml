@@ -1,0 +1,4 @@
+interface:
+  display_name: "Python Development Standards"
+  short_description: "Consistent, idiomatic Python implementation and review"
+  default_prompt: "Use $python-development-standards to implement or review this Python change."

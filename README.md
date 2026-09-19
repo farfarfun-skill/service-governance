@@ -9,8 +9,10 @@
 | [`service-release-governance`](skills/service-release-governance/SKILL.md) | 约束服务通过正式包发布、仓库安装和生产启动 |
 | [`bash-service-guide`](skills/bash-service-guide/SKILL.md) | 统一 Bash 服务生命周期脚本及开发、生产运行边界 |
 | [`submodule-workspace-governance`](skills/submodule-workspace-governance/SKILL.md) | 搭建和审计以 `apps/` 下 Git 子模块聚合多个独立仓库应用的 `<product>-dev` 编排仓库 |
+| [`python-development-standards`](skills/python-development-standards/SKILL.md) | Python 代码、测试、项目配置及 farfarfun 工具复用规范 |
+| [`java-development-standards`](skills/java-development-standards/SKILL.md) | Java 代码、测试、Maven/Gradle 项目的实现和审查 |
 
-这三个 skill 互相引用最密集（`submodule-workspace-governance` 依赖前两者定义 app 仓库应满足的发布和启动规范），放在同一仓库内可以保持相对链接不失效。
+前三个 skill 互相引用最密集（`submodule-workspace-governance` 依赖前两者定义 app 仓库应满足的发布和启动规范），放在同一仓库内可以保持相对链接不失效。`python-development-standards`/`java-development-standards` 从 [`lang-spec-hub`](https://gitee.com/farfarfun-skills/farfarfun-skill--lang-spec-hub) 同步而来，供本仓库内需要具体语言编码规范的场景使用。
 
 ## Requirements
 
@@ -40,6 +42,8 @@ done
 Use $service-release-governance to review how this service is packaged, installed, and started in production.
 Use $bash-service-guide to design or audit scripts/setup.sh and per-service lifecycle scripts.
 Use $submodule-workspace-governance to scaffold or audit this <product>-dev repository's apps/ submodules and scripts/ layout.
+Use $python-development-standards to implement or review this Python change.
+Use $java-development-standards to implement or review this Java change.
 ```
 
 完整项目背景见 [`docs/project/project-overview.md`](docs/project/project-overview.md)。
