@@ -20,33 +20,7 @@ Read this file when `scripts/setup.sh` or a per-service script needs concrete ru
 
 ## Python Pattern
 
-`start`/`run` always use the installed console-script entrypoint, regardless of whether the install came from a local build or the registry. Prefer, in order of confidence:
-
-1. A console script from whichever package is currently installed (a locally built copy after `install-dev`, or the exact formal package after `install-prod`)
-2. `python -m package` using that same environment, with the working directory outside the source checkout
-
-Avoid these as the `start`/`run` command, in either case:
-
-- `python scripts/foo.py`
-- `python app.py` from an ad hoc working directory
-- `uv run <command>` when it can resolve the current workspace or an editable install
-- Dev-only reload servers used as the lifecycle script's daemon
-
-Typical split — `install-dev`, `install-prod`, and `publish` are the environment-specific actions; `start`/`run`/`stop`/`status` are identical either way:
-
-- ad hoc dev iteration (outside the lifecycle script): local dev server, reloader, or `uv run ... --reload`
-- `install-dev` (dev-only): clear previous build/install, rebuild, force-reinstall the wheel locally (`funbuild install` when available)
-- `publish` (prod-only): `funbuild build` (alias `funbuild release`) or the existing Python release command
-- `install-prod [version]` (prod-only): the first install on a host — `pip install <pkg>[==<version>]`/`uv pip install <pkg>[==<version>]` directly, since there's no CLI yet to delegate to; omit the version to install whatever's current without disturbing an existing install
-- `upgrade [version]`/`rollback <version>`: once installed, move to the latest/an explicit version via the installed CLI's own subcommand if it has one, otherwise `pip install <pkg> -U`/`pip install <pkg>==<version>` directly
-- `start`/`run`: the installed CLI or module entrypoint, no dev-only reload flags or source-path overrides, no `dev`/`prod` argument
-- `stop`: terminate via `funshell port <port> --kill`; a Python CLI should depend on the `funshell` package directly and call its port-kill API in-process rather than shelling out to the `funshell` command
-- `status`: PID/port plus the installed package's version
-
-In multi-service repositories:
-
-- keep Python service commands scoped to that service's root, virtualenv tooling, and ports
-- do not reuse backend defaults for unrelated frontend services
+The concrete Python commands for each action (`install-dev`/`install-prod`/`publish`/`upgrade`/`rollback`/`start`/`run`/`stop`/`status`), the console-script-entrypoint preference order, the commands to avoid (`python scripts/foo.py`, `python app.py` from an ad hoc working directory, a workspace-resolving `uv run <command>`, dev-only reload servers as the daemon), and the multi-service scoping rules (keep Python commands scoped to that service's root, virtualenv, and ports) live in [python-development-standards](../../python-development-standards/references/service-cli-contract.md) — read that reference for a Python service instead of this section. This file's role is only to route to the right pattern (see [Choose The Right Pattern](#choose-the-right-pattern) above) and to state the shared Bash-dispatch mechanics common to every ecosystem (see [rules.md](rules.md)).
 
 ## Frontend Pattern
 
