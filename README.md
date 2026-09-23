@@ -2,6 +2,8 @@
 
 面向 Codex 的服务工程规范 Skill 集合：发布治理、Bash 生命周期脚本、多仓库子模块编排。
 
+> 跨仓库（含 `lang-spec-hub` 等）的完整 Skill 路由一览见 [`skill-router`](https://github.com/farfarfun-skill/skill-router)。
+
 ## Skills
 
 | Skill | 能力 |
