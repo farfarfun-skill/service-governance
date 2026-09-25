@@ -32,7 +32,7 @@ Test to apply per app (service vs. package — a nested workspace app is identif
 
 Do not infer the category from the repo's name suffix. `-api`/`-web` are conventions, not proof: a `-web` app that ships as static files with no local server process, or a `-api` deployed as a set of serverless functions with nothing to `start`/`stop` locally, is a package app despite the name; conversely a differently-named app (`-worker`, `-consumer`, `-scheduler`) is a service app the moment something runs it as a process. Settle the classification explicitly in two places that must agree, not by guessing from the string:
 
-1. Code: whether `scripts/setup.sh` wires the app's alias into `resolve_service_app()` (service) or only into `resolve_release_app()`/`all_app_paths()` (package) — see [references/skeleton.md](references/skeleton.md).
+1. Code: whether `scripts/setup.sh` wires the app's alias into `resolve_service_app()` (service) or only into `resolve_release_app()`/`all_app_paths()` (package) — see [skeleton.md](skeleton.md).
 2. Docs: the app's row in the dev repo README's app table states its category outright ("service" / "package" / "nested workspace"), not just a free-text description.
 
 A review that finds the code and the README disagreeing on an app's category is a defect, not a matter of judgment.
