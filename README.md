@@ -49,3 +49,9 @@ Use $java-development-standards to implement or review this Java change.
 ```
 
 完整项目背景见 [`docs/project/project-overview.md`](docs/project/project-overview.md)。
+
+## 关于组织
+
+本仓库属于 [farfarfun-skill](https://github.com/farfarfun-skill) —— [farfarfun](https://github.com/farfarfun) 旗下的 AI Agent Skill 产品线子组织，也是全部自研 Skill 的源头。组织内各仓库分别聚焦一个治理域，把原本依赖人工评审的规范，转化为 Agent 可直接调用的确定性检查器与工作流；issue、PR 与规范变更均在此处提交。
+
+本仓库在其中负责服务工程规范：发布治理、Bash 生命周期脚本与多仓库子模块编排（其中的语言规范副本同步自 [`lang-spec-hub`](https://github.com/farfarfun-skill/lang-spec-hub)）。要确认某个任务该用哪个 Skill，先查 [`skill-router`](https://github.com/farfarfun-skill/skill-router)；需要批量安装或通过 Gitee 访问，请前往镜像组织 [farfarfun-skills](https://github.com/farfarfun-skills)。
